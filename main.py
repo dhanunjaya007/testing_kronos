@@ -125,34 +125,20 @@ async def ban(ctx, member: discord.Member, *, reason=None):
         return
     await member.ban(reason=reason)
     await ctx.send(f"{member.mention} has been banned. Reason: {reason or 'No reason provided'}")
-
 @bot.command()
 @commands.has_permissions(ban_members=True)
-async def unban(ctx, *, user_identifier):
-    """Unban a user by ID or username."""
-    banned_users = await ctx.guild.bans()
-
-    # Try to interpret the input as a user ID
+async def unban(ctx, user_id: int):
+    """Unban a user using their Discord ID (works with new username system)."""
     try:
-        user_id = int(user_identifier)
-        user = await bot.fetch_user(user_id)
+        user = discord.Object(id=user_id)
         await ctx.guild.unban(user)
-        await ctx.send(f"Unbanned user with ID {user_id}: {user}")
-        return
-    except ValueError:
-        # Not an ID; treat as username string
-        pass
-
-    # Fall back: Try to unban by username (matches new format)
-    user_identifier = user_identifier.strip().lower()
-    for entry in banned_users:
-        user = entry.user
-        if user.name.lower() == user_identifier:
-            await ctx.guild.unban(user)
-            await ctx.send(f"Unbanned {user.mention}")
-            return
-
-    await ctx.send("User not found in ban list.")
+        await ctx.send(f"Successfully unbanned user with ID {user_id}.")
+    except discord.NotFound:
+        await ctx.send("That user is not in the ban list.")
+    except discord.Forbidden:
+        await ctx.send("I don’t have permission to unban users.")
+    except Exception as e:
+        await ctx.send(f"Unexpected error: {e}")
 
 
 @bot.command()
@@ -206,3 +192,4 @@ async def dm(ctx,*, msg):
         await ctx.author.send(f"Failed to send DM , {e}")
 
 bot.run(token, log_handler=handler, log_level=logging.DEBUG)
+
