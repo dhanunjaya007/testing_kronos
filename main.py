@@ -117,7 +117,12 @@ async def kick(ctx, member: discord.Member, *, reason=None):
 @bot.command()
 @commands.has_permissions(ban_members=True)
 async def ban(ctx, member: discord.Member, *, reason=None):
-    """Ban a member from the server."""
+    if member.top_role >= ctx.author.top_role and ctx.author != ctx.guild.owner:
+        await ctx.send("You cannot ban someone with an equal or higher role.")
+        return
+    if not ctx.guild.me.guild_permissions.ban_members:
+        await ctx.send("I don't have permission to ban members.")
+        return
     await member.ban(reason=reason)
     await ctx.send(f"{member.mention} has been banned. Reason: {reason or 'No reason provided'}")
 
@@ -149,6 +154,7 @@ async def unban(ctx, *, user_identifier):
 
     await ctx.send("User not found in ban list.")
 
+
 @bot.command()
 @commands.has_permissions(manage_messages=True)
 async def clear(ctx, amount: int = 5):
@@ -159,25 +165,30 @@ async def clear(ctx, amount: int = 5):
 @bot.command()
 @commands.has_permissions(manage_roles=True)
 async def mute(ctx, member: discord.Member, *, reason=None):
-    """Mute a member by adding a 'Muted' role."""
     muted_role = discord.utils.get(ctx.guild.roles, name="Muted")
     if not muted_role:
         muted_role = await ctx.guild.create_role(name="Muted")
         for channel in ctx.guild.channels:
-            await channel.set_permissions(muted_role, speak=False, send_messages=False)
+            await channel.set_permissions(muted_role, send_messages=False, speak=False, add_reactions=False)
+
+    if muted_role in member.roles:
+        await ctx.send(f"{member.mention} is already muted.")
+        return
+
     await member.add_roles(muted_role, reason=reason)
     await ctx.send(f"{member.mention} has been muted. Reason: {reason or 'No reason provided'}")
+
 
 @bot.command()
 @commands.has_permissions(manage_roles=True)
 async def unmute(ctx, member: discord.Member):
-    """Unmute a previously muted member."""
     muted_role = discord.utils.get(ctx.guild.roles, name="Muted")
-    if muted_role in member.roles:
-        await member.remove_roles(muted_role)
-        await ctx.send(f"{member.mention} has been unmuted.")
-    else:
-        await ctx.send("This user isn’t muted.")
+    if muted_role not in member.roles:
+        await ctx.send(f"{member.mention} is not muted.")
+        return
+
+    await member.remove_roles(muted_role)
+    await ctx.send(f"{member.mention} has been unmuted.")
 
 @bot.command()
 @commands.has_permissions(manage_messages=True)
@@ -195,4 +206,3 @@ async def dm(ctx,*, msg):
         await ctx.author.send(f"Failed to send DM , {e}")
 
 bot.run(token, log_handler=handler, log_level=logging.DEBUG)
-
