@@ -19,6 +19,12 @@ intents.members = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 app = Flask(__name__)
 
+import os
+port = int(os.environ.get("PORT", 10000))  # Render's default is 10000
+
+# In main.py somewhere (for manual launch/testing only):
+# app.run(host="0.0.0.0", port=port)
+
 @app.route('/github', methods=['POST'])
 def github_webhook():
     data = request.json
@@ -211,4 +217,5 @@ async def chat(ctx, *, prompt: str):
 
 
 bot.run(token, log_handler=handler, log_level=logging.DEBUG)
+
 
