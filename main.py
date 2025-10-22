@@ -198,40 +198,20 @@ async def dm(ctx,*, msg):
     except Exception as e:
         await ctx.author.send(f"Failed to send DM , {e}")
 
+
+SPACE_API_URL = "https://yuntian-deng-chatgpt.hf.space/run/predict"
+
 @bot.command()
 async def chat(ctx, *, prompt: str):
     await ctx.send("🧠 Thinking...")
-
-    headers = {"Authorization": f"Bearer {hf_token}"}
-    payload = {"inputs": prompt, "parameters": {"max_new_tokens": 128}}
-    url = f"https://api-inference.huggingface.co/models/{model_name}"
-
+    data = {"data": [prompt]}
     try:
-        response = requests.post(url, headers=headers, json=payload, timeout=60)
-        if response.status_code != 200:
-            await ctx.send(f"Hugging Face API error: {response.status_code} {response.text}")
-            return
-
-        try:
-            data = response.json()
-        except Exception as e:
-            await ctx.send(f"Couldn't parse API response: {response.text}")
-            return
-
-        reply = ""
-        if isinstance(data, dict) and "generated_text" in data:
-            reply = data["generated_text"]
-        elif isinstance(data, list) and len(data) > 0 and "generated_text" in data[0]:
-            reply = data[0]["generated_text"]
-        elif "error" in data:
-            reply = "Hugging Face: " + data["error"]
-        else:
-            reply = str(data)
-
-        await ctx.send(reply[:1900])  # Discord max message length
-
+        response = requests.post(SPACE_API_URL, json=data)
+        result = response.json()
+        reply = result.get("data", ["No response"])[0]
+        await ctx.send(reply[:1900])
     except Exception as e:
-        await ctx.send(f"Error with Hugging Face API: {e}")
-
+        await ctx.send(f"Error with Space API: {e}")
 
 bot.run(token, log_handler=handler, log_level=logging.DEBUG)
+
