@@ -200,7 +200,6 @@ async def dm(ctx,*, msg):
 
 @bot.command()
 async def chat(ctx, *, prompt: str):
-    """Chat with a Hugging Face model via the Inference API (no local download)."""
     await ctx.send("🧠 Thinking...")
 
     headers = {"Authorization": f"Bearer {hf_token}"}
@@ -209,9 +208,16 @@ async def chat(ctx, *, prompt: str):
 
     try:
         response = requests.post(url, headers=headers, json=payload, timeout=60)
-        data = response.json()
+        if response.status_code != 200:
+            await ctx.send(f"Hugging Face API error: {response.status_code} {response.text}")
+            return
 
-        # Many models provide 'generated_text', others just return a string
+        try:
+            data = response.json()
+        except Exception as e:
+            await ctx.send(f"Couldn't parse API response: {response.text}")
+            return
+
         reply = ""
         if isinstance(data, dict) and "generated_text" in data:
             reply = data["generated_text"]
