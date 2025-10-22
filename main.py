@@ -5,9 +5,14 @@ from discord.ext import commands
 import logging
 from dotenv import load_dotenv
 import os   
+import requests
+
 
 load_dotenv()
 token = os.getenv('DISCORD_TOKEN')
+hf_token = os.getenv("HUGGING_FACE_TOKEN")
+model_name = os.getenv("MODEL_NAME")
+
 
 handler = logging.FileHandler(filename='discord.log', encoding='utf-8', mode='w')
 intents = discord.Intents.default()
@@ -125,6 +130,7 @@ async def ban(ctx, member: discord.Member, *, reason=None):
         return
     await member.ban(reason=reason)
     await ctx.send(f"{member.mention} has been banned. Reason: {reason or 'No reason provided'}")
+
 @bot.command()
 @commands.has_permissions(ban_members=True)
 async def unban(ctx, user_id: int):
@@ -139,6 +145,7 @@ async def unban(ctx, user_id: int):
         await ctx.send("I don’t have permission to unban users.")
     except Exception as e:
         await ctx.send(f"Unexpected error: {e}")
+
 
 
 @bot.command()
@@ -191,5 +198,34 @@ async def dm(ctx,*, msg):
     except Exception as e:
         await ctx.author.send(f"Failed to send DM , {e}")
 
-bot.run(token, log_handler=handler, log_level=logging.DEBUG)
+@bot.command()
+async def chat(ctx, *, prompt: str):
+    """Chat with a Hugging Face model via the Inference API (no local download)."""
+    await ctx.send("🧠 Thinking...")
 
+    headers = {"Authorization": f"Bearer {hf_token}"}
+    payload = {"inputs": prompt, "parameters": {"max_new_tokens": 128}}
+    url = f"https://api-inference.huggingface.co/models/{model_name}"
+
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=60)
+        data = response.json()
+
+        # Many models provide 'generated_text', others just return a string
+        reply = ""
+        if isinstance(data, dict) and "generated_text" in data:
+            reply = data["generated_text"]
+        elif isinstance(data, list) and len(data) > 0 and "generated_text" in data[0]:
+            reply = data[0]["generated_text"]
+        elif "error" in data:
+            reply = "Hugging Face: " + data["error"]
+        else:
+            reply = str(data)
+
+        await ctx.send(reply[:1900])  # Discord max message length
+
+    except Exception as e:
+        await ctx.send(f"Error with Hugging Face API: {e}")
+
+
+bot.run(token, log_handler=handler, log_level=logging.DEBUG)
