@@ -194,17 +194,8 @@ async def dm(ctx,*, msg):
     except Exception as e:
         await ctx.author.send(f"Failed to send DM , {e}")
 
-
-import requests
-
-HF_API_URL = "https://api-inference.huggingface.co/models/HuggingFaceTB/SmoLLM3-3B"
-HF_TOKEN = os.getenv('HF_TOKEN')  # Set this as an ENV variable
-
-import requests
-import os
-
 HF_API_URL = "https://api-inference.huggingface.co/models/HuggingFaceTB/SmolLM3-3B"
-HF_TOKEN = os.getenv('HF_TOKEN').strip()  # Make sure there are no newline/space chars
+HF_TOKEN = os.getenv('HF_TOKEN').strip()  # Always strip whitespace just in case
 
 def chat_with_smollm3(prompt):
     headers = {
@@ -224,11 +215,14 @@ def chat_with_smollm3(prompt):
         data = response.json()
     except Exception as e:
         return f"API did not return JSON. Response: '{response.text[:100]}'"
-    if "error" in data:
+    # Typical output: [{'generated_text': 'your reply'}]
+    if ("error" in data):
         return f"HF API error: {data['error']}"
-    elif isinstance(data, list) and len(data) > 0 and "generated_text" in data[0]:
-        return data[0]["generated_text"]
+    elif isinstance(data, list):
+        if (len(data) > 0 and "generated_text" in data[0]):
+            return data[0]["generated_text"]
     return str(data)
+
 @bot.command()
 async def chat(ctx, *, prompt: str):
     await ctx.send("🧠 Got your message, processing...")
@@ -239,11 +233,11 @@ async def chat(ctx, *, prompt: str):
         await ctx.send(f"Error: {e}")
 
 
-
 import threading
 def run_bot():
     bot.run(token, log_handler=handler, log_level=logging.DEBUG)
 threading.Thread(target=run_bot, daemon=True).start()
+
 
 
 
