@@ -4,3 +4,5 @@ python-dotenv>=1.0.1
 gradio_client>=0.15.0
 gunicorn
 logging
+requests
+
