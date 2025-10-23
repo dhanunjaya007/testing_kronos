@@ -44,6 +44,9 @@ DEFAULT_MODEL = "llama"
 # Store conversation history (optional enhancement)
 conversation_history = {}
 
+# Bot running flag
+bot_thread = None
+
 # ============= FLASK ROUTES =============
 
 @app.route('/github', methods=['POST'])
@@ -86,6 +89,7 @@ def home():
     return jsonify({
         'bot': 'Discord Bot with AI',
         'status': 'running',
+        'bot_online': bot.is_ready(),
         'endpoints': ['/health', '/github']
     }), 200
 
@@ -629,26 +633,35 @@ async def on_command_error(ctx, error):
         await ctx.send(f"❌ An error occurred: {str(error)}")
         logging.error(f"Command error in {ctx.command}: {error}", exc_info=True)
 
-# ============= RUN BOT AND FLASK =============
+# ============= BOT STARTUP FUNCTION =============
 
-def run_flask():
-    """Run the Flask server"""
-    app.run(host="0.0.0.0", port=port, debug=False)
-
-if __name__ == "__main__":
-    # Validate environment variables
+def start_bot():
+    """Start the Discord bot in a separate thread"""
+    global bot_thread
+    
     if not token:
         print("❌ ERROR: DISCORD_TOKEN not found in environment variables!")
-        exit(1)
+        return
     
-    # Run Flask in a separate thread
-    flask_thread = threading.Thread(target=run_flask, daemon=True)
-    flask_thread.start()
-    print(f"🌐 Flask server starting on port {port}")
+    def run_bot():
+        try:
+            print("🤖 Starting Discord bot...")
+            bot.run(token, log_handler=handler, log_level=logging.INFO)
+        except Exception as e:
+            logging.error(f"Failed to start bot: {e}")
     
-    # Run Discord bot in the main thread
-    try:
-        bot.run(token, log_handler=handler, log_level=logging.INFO)
-    except Exception as e:
-        logging.error(f"Failed to start bot: {e}")
-        exit(1)
+    bot_thread = threading.Thread(target=run_bot, daemon=True)
+    bot_thread.start()
+    print("✅ Discord bot thread started")
+
+# ============= START BOT ON MODULE IMPORT =============
+
+# Start the bot when the module is loaded (for gunicorn)
+start_bot()
+
+# ============= MAIN EXECUTION =============
+
+if __name__ == "__main__":
+    # This runs only when executed directly (not with gunicorn)
+    print("🌐 Starting Flask and Discord bot...")
+    app.run(host="0.0.0.0", port=port, debug=False)
