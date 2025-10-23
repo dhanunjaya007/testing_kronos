@@ -197,10 +197,11 @@ async def dm(ctx,*, msg):
 
 from gradio_client import Client
 client = Client("yuntian-deng/ChatGPT")
-
 @bot.command()
 async def chat(ctx, *, prompt: str):
     await ctx.send("🧠 Got your message, processing...")
+    import time
+    start = time.time()
     try:
         result = client.predict(
             inputs=prompt,
@@ -209,17 +210,20 @@ async def chat(ctx, *, prompt: str):
             chat_counter=0,
             chatbot=[],
             api_name="/predict",
+            timeout=20  # 20 seconds timeout!
         )
         await ctx.send(f"Raw result: {result}")
-        reply = result[3]
+        reply = result[3] if len(result) > 3 else "No valid response"
         await ctx.send(reply[:1900])
     except Exception as e:
-        await ctx.send(f"Error with Space: {e}")
+        await ctx.send(f"Error with Space: {repr(e)} [{time.time() - start:.1f}s]")
+
 
 import threading
 def run_bot():
     bot.run(token, log_handler=handler, log_level=logging.DEBUG)
 threading.Thread(target=run_bot, daemon=True).start()
+
 
 
 
