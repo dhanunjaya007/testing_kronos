@@ -25,7 +25,7 @@ app = Flask(__name__)
 port = int(os.environ.get("PORT", 10000))
 
 # OpenRouter API Configuration
-OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY', '').strip()
+OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY').strip()
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 # Available free models on OpenRouter
@@ -449,3 +449,4 @@ if __name__ == "__main__":
     
     # Run Flask in main thread
     run_flask()
+
