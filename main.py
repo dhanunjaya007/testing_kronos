@@ -200,7 +200,13 @@ import requests
 HF_API_URL = "https://api-inference.huggingface.co/models/HuggingFaceTB/SmoLLM3-3B"
 HF_TOKEN = os.getenv('HF_TOKEN')  # Set this as an ENV variable
 
-def chat_with_llama(prompt):
+import requests
+import os
+
+HF_API_URL = "https://api-inference.huggingface.co/models/HuggingFaceTB/SmolLM3-3B"
+HF_TOKEN = os.getenv('HF_TOKEN').strip()  # Make sure there are no newline/space chars
+
+def chat_with_smollm3(prompt):
     headers = {
         "Authorization": f"Bearer {HF_TOKEN}"
     }
@@ -213,7 +219,7 @@ def chat_with_llama(prompt):
     }
     response = requests.post(HF_API_URL, headers=headers, json=payload, timeout=60)
     if response.status_code != 200:
-        return f"HF API HTTP {response.status_code}: '{response.text}'"
+        return f"HF API HTTP {response.status_code}: '{response.text[:200]}'"
     try:
         data = response.json()
     except Exception as e:
@@ -223,22 +229,22 @@ def chat_with_llama(prompt):
     elif isinstance(data, list) and len(data) > 0 and "generated_text" in data[0]:
         return data[0]["generated_text"]
     return str(data)
-
-
 @bot.command()
 async def chat(ctx, *, prompt: str):
     await ctx.send("🧠 Got your message, processing...")
     try:
-        reply = chat_with_llama(prompt)
+        reply = chat_with_smollm3(prompt)
         await ctx.send(reply[:1900])
     except Exception as e:
         await ctx.send(f"Error: {e}")
+
 
 
 import threading
 def run_bot():
     bot.run(token, log_handler=handler, log_level=logging.DEBUG)
 threading.Thread(target=run_bot, daemon=True).start()
+
 
 
 
