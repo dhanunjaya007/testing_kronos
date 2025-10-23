@@ -197,7 +197,7 @@ async def dm(ctx,*, msg):
 
 import requests
 
-HF_API_URL = "https://api-inference.huggingface.co/models/meta-llama/Meta-Llama-3-8B-Instruct"
+HF_API_URL = "https://api-inference.huggingface.co/models/HuggingFaceTB/SmoLLM3-3B"
 HF_TOKEN = os.getenv('HF_TOKEN')  # Set this as an ENV variable
 
 def chat_with_llama(prompt):
@@ -239,6 +239,7 @@ import threading
 def run_bot():
     bot.run(token, log_handler=handler, log_level=logging.DEBUG)
 threading.Thread(target=run_bot, daemon=True).start()
+
 
 
 
