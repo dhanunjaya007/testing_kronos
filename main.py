@@ -200,7 +200,7 @@ client = Client("yuntian-deng/ChatGPT")
 
 @bot.command()
 async def chat(ctx, *, prompt: str):
-    await ctx.send("🧠 Thinking...")
+    await ctx.send("🧠 Got your message, processing...")
     try:
         result = client.predict(
             inputs=prompt,
@@ -210,6 +210,7 @@ async def chat(ctx, *, prompt: str):
             chatbot=[],
             api_name="/predict",
         )
+        await ctx.send(f"Raw result: {result}")
         reply = result[3]
         await ctx.send(reply[:1900])
     except Exception as e:
@@ -219,6 +220,7 @@ import threading
 def run_bot():
     bot.run(token, log_handler=handler, log_level=logging.DEBUG)
 threading.Thread(target=run_bot, daemon=True).start()
+
 
 
 
