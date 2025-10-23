@@ -215,7 +215,10 @@ async def chat(ctx, *, prompt: str):
     except Exception as e:
         await ctx.send(f"Error with Space: {e}")
 
+import threading
+def run_bot():
+    bot.run(token, log_handler=handler, log_level=logging.DEBUG)
+threading.Thread(target=run_bot, daemon=True).start()
 
-bot.run(token, log_handler=handler, log_level=logging.DEBUG)
 
 
