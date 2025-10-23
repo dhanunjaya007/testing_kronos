@@ -437,16 +437,15 @@ async def on_command_error(ctx, error):
 def run_bot():
     """Run the Discord bot"""
     bot.run(token, log_handler=handler, log_level=logging.DEBUG)
-
 def run_flask():
-    """Run the Flask app"""
     app.run(host="0.0.0.0", port=port)
 
 if __name__ == "__main__":
-    # Start bot in a separate thread
-    bot_thread = threading.Thread(target=run_bot, daemon=True)
-    bot_thread.start()
+    # Run Flask in a separate thread
+    flask_thread = threading.Thread(target=run_flask)
+    flask_thread.start()
     
-    # Run Flask in main thread
-    run_flask()
+    # Run Discord bot in the main thread
+    bot.run(token, log_handler=handler, log_level=logging.DEBUG)
+
 
