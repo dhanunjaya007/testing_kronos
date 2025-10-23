@@ -212,13 +212,18 @@ def chat_with_llama(prompt):
         }
     }
     response = requests.post(HF_API_URL, headers=headers, json=payload, timeout=60)
-    data = response.json()
-    # Typical output: [{'generated_text': 'response here'}]
+    if response.status_code != 200:
+        return f"HF API HTTP {response.status_code}: '{response.text}'"
+    try:
+        data = response.json()
+    except Exception as e:
+        return f"API did not return JSON. Response: '{response.text[:100]}'"
     if "error" in data:
         return f"HF API error: {data['error']}"
     elif isinstance(data, list) and len(data) > 0 and "generated_text" in data[0]:
         return data[0]["generated_text"]
     return str(data)
+
 
 @bot.command()
 async def chat(ctx, *, prompt: str):
@@ -234,6 +239,7 @@ import threading
 def run_bot():
     bot.run(token, log_handler=handler, log_level=logging.DEBUG)
 threading.Thread(target=run_bot, daemon=True).start()
+
 
 
 
