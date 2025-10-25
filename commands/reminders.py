@@ -13,7 +13,7 @@ class Reminders(commands.Cog):
     def __init__(self, bot, get_db_connection_func):
         self.bot = bot
         self.get_db_connection = get_db_connection_func
-        self.reminders = {}  # In-memory cache: {reminder_id: reminder_data}
+        self.reminders = {}
         self.reminder_counter = 0
         self.init_db_table()
         self.load_reminders()
@@ -59,7 +59,7 @@ class Reminders(commands.Cog):
                         rows = cur.fetchall()
                         self.reminders = {}
                         for row in rows:
-                            reminder_id = row[1]  # reminder_id
+                            reminder_id = row[1]
                             self.reminders[reminder_id] = {
                                 'id': reminder_id,
                                 'user_id': row[2],
@@ -72,9 +72,8 @@ class Reminders(commands.Cog):
                                 'frequency': row[9],
                                 'next_trigger': row[10]
                             }
-                            # Update counter based on max ID
                             try:
-                                counter = int(reminder_id[1:])  # e.g., 'R1' -> 1
+                                counter = int(reminder_id[1:])
                                 if counter > self.reminder_counter:
                                     self.reminder_counter = counter
                             except (ValueError, IndexError):
@@ -134,7 +133,6 @@ class Reminders(commands.Cog):
         now = datetime.utcnow()
         time_str = time_str.lower().strip()
 
-        # Patterns for "in X minutes/hours/days"
         in_pattern = re.match(r'in (\d+)\s*(minute|min|hour|hr|day|week)s?', time_str)
         if in_pattern:
             amount = int(in_pattern.group(1))
@@ -149,10 +147,8 @@ class Reminders(commands.Cog):
             elif unit == 'week':
                 return now + timedelta(weeks=amount)
 
-        # Patterns for "tomorrow", "today"
         if 'tomorrow' in time_str:
             base_time = now + timedelta(days=1)
-            # Check for time specification
             time_match = re.search(r'(\d+):?(\d+)?\s*(am|pm)?', time_str)
             if time_match:
                 hour = int(time_match.group(1))
@@ -182,10 +178,9 @@ class Reminders(commands.Cog):
                     
                 target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
                 if target < now:
-                    return None  # Time has passed today
+                    return None
                 return target
 
-        # Pattern for specific time (e.g., "3pm", "14:30")
         time_match = re.match(r'(\d+):?(\d+)?\s*(am|pm)?', time_str)
         if time_match:
             hour = int(time_match.group(1))
@@ -199,7 +194,7 @@ class Reminders(commands.Cog):
                 
             target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
             if target < now:
-                target += timedelta(days=1)  # Schedule for tomorrow
+                target += timedelta(days=1)
             return target
 
         return None
@@ -222,7 +217,6 @@ class Reminders(commands.Cog):
 
         for reminder_id, reminder in list(self.reminders.items()):
             if reminder['trigger_time'] <= now:
-                # Send reminder
                 try:
                     channel = self.bot.get_channel(reminder['channel_id'])
                     if channel:
@@ -255,9 +249,8 @@ class Reminders(commands.Cog):
                             triggered.append(reminder_id)
                 except Exception as e:
                     logger.error(f"❌ Failed to send reminder {reminder_id}: {e}")
-                    triggered.append(reminder_id)  # Remove if failed
+                    triggered.append(reminder_id)
 
-        # Clean up triggered one-time reminders
         for rid in triggered:
             if rid in self.reminders:
                 del self.reminders[rid]
@@ -352,10 +345,9 @@ class Reminders(commands.Cog):
             color=discord.Color.blue()
         )
         
-        # Sort by trigger time
         user_reminders.sort(key=lambda x: x['trigger_time'])
         
-        for reminder in user_reminders[:10]:  # Show max 10
+        for reminder in user_reminders[:10]:
             time_delta = reminder['trigger_time'] - datetime.utcnow()
             hours = int(time_delta.total_seconds() // 3600)
             minutes = int((time_delta.total_seconds() % 3600) // 60)
@@ -387,7 +379,6 @@ class Reminders(commands.Cog):
         
         reminder = self.reminders[reminder_id]
         
-        # Check if user owns this reminder
         if reminder['user_id'] != ctx.author.id:
             await ctx.send("❌ You can only cancel your own reminders.", ephemeral=True)
             return
@@ -480,7 +471,6 @@ class Reminders(commands.Cog):
         
         count = len(user_reminders)
         
-        # Ask for confirmation
         embed = discord.Embed(
             title="⚠️ Clear All Reminders?",
             description=f"This will delete **{count}** reminder(s). This cannot be undone.",
@@ -539,7 +529,6 @@ class ConfirmView(discord.ui.View):
         self.stop()
 
 async def setup(bot):
-    # Get the get_db_connection function from bot
     get_db_connection_func = getattr(bot, 'get_db_connection', None)
     if not get_db_connection_func:
         logger.error("❌ get_db_connection not found on bot instance")
