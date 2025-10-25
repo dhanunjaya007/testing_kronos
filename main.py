@@ -334,6 +334,11 @@ async def on_ready():
         print("✅ Moderation commands loaded")
     except Exception as e:
         print(f"⚠️ Moderation cog error: {e}")
+    try:
+        await bot.load_extension("commands.reminders")
+        print("✅ Reminder commands loaded")
+    except Exception as e:
+        print(f"⚠️ Reminders cog error: {e}")
     
     # FIXED: Setup custom commands BEFORE syncing
     setup_git_commands(bot, save_webhook_data, DEPLOYMENT_URL)
@@ -490,3 +495,4 @@ start_bot()
 if __name__ == "__main__":
     print("🌐 Starting Flask...")
     app.run(host="0.0.0.0", port=port, debug=False)
+
