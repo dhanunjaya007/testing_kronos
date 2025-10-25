@@ -473,7 +473,7 @@ def github_webhook(token):
         # Schedule the coroutine in the bot's event loop
         if bot.is_ready():
             future = asyncio.run_coroutine_threadsafe(send_github_notification(), bot.loop)
-            result = future.result(timeout=15)  # Wait up to 15 seconds
+            result = future.result(timeout=50)  # Wait up to 15 seconds
             
             if result:
                 webhook_logger.info(f"Webhook processed successfully for {guild.name}")
@@ -1495,6 +1495,7 @@ if __name__ == "__main__":
     # This runs only when executed directly (not with gunicorn)
     print("🌐 Starting Flask and Discord bot...")
     app.run(host="0.0.0.0", port=port, debug=False)
+
 
 
 
