@@ -12,8 +12,8 @@ import requests
 import asyncio
 from datetime import datetime
 from pathlib import Path
-from pymongo import MongoClient
-from pymongo.errors import ConnectionFailure
+import psycopg2
+from psycopg2 import pool
 
 
 # Load environment variables
@@ -101,174 +101,6 @@ bot_thread = None
 # Deployment URL (set this to your actual deployment URL)
 DEPLOYMENT_URL = os.getenv('DEPLOYMENT_URL', 'https://testing-kronos.onrender.com')
 
-# ============= MONGODB WEBHOOK TOKEN STORAGE =============
-
-MAX_TOKENS_PER_GUILD = 5  # Prevent token spam
-RATE_LIMIT = {}  # Track webhook requests for rate limiting
-
-# MongoDB client (lazy initialization)
-mongo_client = None
-mongo_db = None
-tokens_collection = None
-
-def init_mongodb():
-    """Initialize MongoDB connection"""
-    global mongo_client, mongo_db, tokens_collection
-    
-    mongodb_uri = os.getenv('MONGODB_URI')
-    if not mongodb_uri:
-        security_logger.error("❌ MONGODB_URI not set in environment variables")
-        return False
-    
-    try:
-        # Connect to MongoDB with TLS settings to fix SSL handshake
-        mongo_client = MongoClient(
-            mongodb_uri,
-            serverSelectionTimeoutMS=10000,
-            tls=True,
-            tlsAllowInvalidCertificates=True
-        )
-
-        
-        # Test connection
-        mongo_client.admin.command('ping')
-        
-        # Get database and collection
-        mongo_db = mongo_client['discord_bot']
-        tokens_collection = mongo_db['webhook_tokens']
-        
-        # Create unique index on token field
-        tokens_collection.create_index('token', unique=True)
-        tokens_collection.create_index('guild_id')
-        
-        security_logger.info("✅ MongoDB connected successfully")
-        return True
-        
-    except ConnectionFailure as e:
-        security_logger.error(f"❌ MongoDB connection failed: {e}")
-        return False
-    except Exception as e:
-        security_logger.error(f"❌ MongoDB initialization error: {e}")
-        return False
-
-def load_webhook_tokens():
-    """Load all webhook tokens from MongoDB"""
-    if not init_mongodb():
-        security_logger.warning("⚠️ MongoDB not available, using empty token dict")
-        return {}
-    
-    try:
-        # Fetch all tokens from MongoDB
-        cursor = tokens_collection.find({}, {'_id': 0, 'token': 1, 'guild_id': 1})
-        tokens = {doc['token']: doc['guild_id'] for doc in cursor}
-        
-        security_logger.info(f"✅ Loaded {len(tokens)} webhook tokens from MongoDB")
-        return tokens
-        
-    except Exception as e:
-        security_logger.error(f"❌ Failed to load tokens from MongoDB: {e}")
-        return {}
-
-def save_webhook_token(token, guild_id):
-    """Save a single webhook token to MongoDB"""
-    if not tokens_collection:
-        if not init_mongodb():
-            return False
-    
-    try:
-        # Insert or update token
-        tokens_collection.update_one(
-            {'token': token},
-            {
-                '$set': {
-                    'token': token,
-                    'guild_id': guild_id,
-                    'updated_at': datetime.utcnow()
-                },
-                '$setOnInsert': {
-                    'created_at': datetime.utcnow()
-                }
-            },
-            upsert=True
-        )
-        
-        security_logger.info(f"✅ Saved token for guild {guild_id} to MongoDB")
-        return True
-        
-    except Exception as e:
-        security_logger.error(f"❌ Failed to save token to MongoDB: {e}")
-        return False
-
-def get_tokens_for_guild(guild_id):
-    """Get all tokens for a specific guild"""
-    if not tokens_collection:
-        return []
-    
-    try:
-        cursor = tokens_collection.find({'guild_id': guild_id}, {'_id': 0, 'token': 1})
-        return [doc['token'] for doc in cursor]
-    except Exception as e:
-        security_logger.error(f"❌ Failed to fetch guild tokens: {e}")
-        return []
-
-def generate_webhook_token(guild_id):
-    """Generate a unique webhook token and save to MongoDB"""
-    # Check if guild already has a token - reuse it!
-    existing_tokens = get_tokens_for_guild(guild_id)
-    if existing_tokens:
-        security_logger.info(f"♻️ Reusing existing token for guild {guild_id}")
-        # Also add to in-memory cache
-        token = existing_tokens[0]
-        webhook_tokens[token] = guild_id
-        return token
-    
-    # Check token limit
-    if len(existing_tokens) >= MAX_TOKENS_PER_GUILD:
-        security_logger.warning(f"⚠️ Guild {guild_id} has reached token limit")
-        return None
-    
-    # Generate new token
-    token = secrets.token_urlsafe(32)
-    
-    # Save to MongoDB
-    max_attempts = 5
-    for attempt in range(max_attempts):
-        if save_webhook_token(token, guild_id):
-            # Also add to in-memory cache
-            webhook_tokens[token] = guild_id
-            security_logger.info(f"✅ Generated new token for guild {guild_id}")
-            return token
-        
-        # Token collision (extremely rare), generate new one
-        token = secrets.token_urlsafe(32)
-    
-    security_logger.error(f"❌ Failed to generate unique token after {max_attempts} attempts")
-    return None
-
-def get_guild_from_token(token):
-    """Get guild ID from webhook token (with MongoDB fallback)"""
-    # Check in-memory cache first
-    if token in webhook_tokens:
-        return webhook_tokens[token]
-    
-    # Fallback to MongoDB if not in cache
-    if tokens_collection:
-        try:
-            doc = tokens_collection.find_one({'token': token}, {'_id': 0, 'guild_id': 1})
-            if doc:
-                guild_id = doc['guild_id']
-                # Update cache
-                webhook_tokens[token] = guild_id
-                security_logger.info(f"✅ Token found in MongoDB, added to cache")
-                return guild_id
-        except Exception as e:
-            security_logger.error(f"❌ MongoDB lookup failed: {e}")
-    
-    return None
-
-# Load tokens on startup
-webhook_tokens = load_webhook_tokens()
-security_logger.info(f"🔐 Webhook system initialized with {len(webhook_tokens)} persistent token(s)")
 
 # ============= GIT FUNCTIONS =============
 
@@ -284,6 +116,210 @@ async def find_git_channel(guild):
         if 'git' in channel.name.lower():
             return channel
     return None
+
+# ============= POSTGRESQL WEBHOOK TOKEN STORAGE =============
+
+MAX_TOKENS_PER_GUILD = 5  # Prevent token spam
+RATE_LIMIT = {}  # Track webhook requests for rate limiting
+
+# PostgreSQL connection pool
+db_pool = None
+
+def init_database():
+    """Initialize PostgreSQL connection and create table"""
+    global db_pool
+    
+    database_url = os.getenv('DATABASE_URL')
+    if not database_url:
+        security_logger.error("❌ DATABASE_URL not set in environment variables")
+        return False
+    
+    try:
+        # Create connection pool
+        db_pool = psycopg2.pool.SimpleConnectionPool(
+            1, 10,  # min and max connections
+            database_url
+        )
+        
+        # Create table if it doesn't exist
+        conn = db_pool.getconn()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS webhook_tokens (
+                token VARCHAR(64) PRIMARY KEY,
+                guild_id BIGINT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        
+        conn.commit()
+        cursor.close()
+        db_pool.putconn(conn)
+        
+        security_logger.info("✅ PostgreSQL connected successfully")
+        return True
+        
+    except Exception as e:
+        security_logger.error(f"❌ PostgreSQL initialization failed: {e}")
+        return False
+
+def load_webhook_tokens():
+    """Load all webhook tokens from PostgreSQL"""
+    if not init_database():
+        security_logger.warning("⚠️ PostgreSQL not available, using empty token dict")
+        return {}
+    
+    try:
+        conn = db_pool.getconn()
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT token, guild_id FROM webhook_tokens")
+        rows = cursor.fetchall()
+        
+        tokens = {token: guild_id for token, guild_id in rows}
+        
+        cursor.close()
+        db_pool.putconn(conn)
+        
+        security_logger.info(f"✅ Loaded {len(tokens)} webhook tokens from PostgreSQL")
+        return tokens
+        
+    except Exception as e:
+        security_logger.error(f"❌ Failed to load tokens from PostgreSQL: {e}")
+        return {}
+
+def save_webhook_token(token, guild_id):
+    """Save a single webhook token to PostgreSQL"""
+    if not db_pool:
+        if not init_database():
+            return False
+    
+    try:
+        conn = db_pool.getconn()
+        cursor = conn.cursor()
+        
+        cursor.execute(
+            "INSERT INTO webhook_tokens (token, guild_id) VALUES (%s, %s) ON CONFLICT (token) DO NOTHING",
+            (token, guild_id)
+        )
+        
+        conn.commit()
+        cursor.close()
+        db_pool.putconn(conn)
+        
+        security_logger.info(f"✅ Saved token for guild {guild_id} to PostgreSQL")
+        return True
+        
+    except Exception as e:
+        security_logger.error(f"❌ Failed to save token to PostgreSQL: {e}")
+        return False
+
+def get_tokens_for_guild(guild_id):
+    """Get all tokens for a specific guild"""
+    if not db_pool:
+        return []
+    
+    try:
+        conn = db_pool.getconn()
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT token FROM webhook_tokens WHERE guild_id = %s", (guild_id,))
+        rows = cursor.fetchall()
+        tokens = [row[0] for row in rows]
+        
+        cursor.close()
+        db_pool.putconn(conn)
+        
+        return tokens
+    except Exception as e:
+        security_logger.error(f"❌ Failed to fetch guild tokens: {e}")
+        return []
+
+def generate_webhook_token(guild_id):
+    """Generate a unique webhook token and save to PostgreSQL"""
+    # Check if guild already has a token - reuse it!
+    existing_tokens = get_tokens_for_guild(guild_id)
+    if existing_tokens:
+        security_logger.info(f"♻️ Reusing existing token for guild {guild_id}")
+        token = existing_tokens[0]
+        webhook_tokens[token] = guild_id
+        return token
+    
+    # Check token limit
+    if len(existing_tokens) >= MAX_TOKENS_PER_GUILD:
+        security_logger.warning(f"⚠️ Guild {guild_id} has reached token limit")
+        return None
+    
+    # Generate new token
+    token = secrets.token_urlsafe(32)
+    
+    # Save to PostgreSQL
+    max_attempts = 5
+    for attempt in range(max_attempts):
+        if save_webhook_token(token, guild_id):
+            # Also add to in-memory cache
+            webhook_tokens[token] = guild_id
+            security_logger.info(f"✅ Generated new token for guild {guild_id}")
+            return token
+        
+        # Token collision (extremely rare), generate new one
+        token = secrets.token_urlsafe(32)
+    
+    security_logger.error(f"❌ Failed to generate unique token after {max_attempts} attempts")
+    return None
+
+def get_guild_from_token(token):
+    """Get guild ID from webhook token (with PostgreSQL fallback)"""
+    # Check in-memory cache first
+    if token in webhook_tokens:
+        return webhook_tokens[token]
+    
+    # Fallback to PostgreSQL if not in cache
+    if db_pool:
+        try:
+            conn = db_pool.getconn()
+            cursor = conn.cursor()
+            
+            cursor.execute("SELECT guild_id FROM webhook_tokens WHERE token = %s", (token,))
+            row = cursor.fetchone()
+            
+            cursor.close()
+            db_pool.putconn(conn)
+            
+            if row:
+                guild_id = row[0]
+                # Update cache
+                webhook_tokens[token] = guild_id
+                security_logger.info(f"✅ Token found in PostgreSQL, added to cache")
+                return guild_id
+        except Exception as e:
+            security_logger.error(f"❌ PostgreSQL lookup failed: {e}")
+    
+    return None
+
+def check_rate_limit(client_ip, max_requests=30, window=60):
+    """Simple rate limiting: max_requests per window (seconds)"""
+    now = datetime.utcnow().timestamp()
+    
+    if client_ip not in RATE_LIMIT:
+        RATE_LIMIT[client_ip] = []
+    
+    # Remove old requests outside the window
+    RATE_LIMIT[client_ip] = [req_time for req_time in RATE_LIMIT[client_ip] if now - req_time < window]
+    
+    # Check if limit exceeded
+    if len(RATE_LIMIT[client_ip]) >= max_requests:
+        security_logger.warning(f"⚠️ Rate limit exceeded for IP: {client_ip}")
+        return False
+    
+    # Add current request
+    RATE_LIMIT[client_ip].append(now)
+    return True
+
+# Load tokens on startup
+webhook_tokens = load_webhook_tokens()
+security_logger.info(f"🔐 Webhook system initialized with {len(webhook_tokens)} persistent token(s)")
 
 # ============= FLASK ROUTES WITH SECURITY =============
 
@@ -1459,5 +1495,6 @@ if __name__ == "__main__":
     # This runs only when executed directly (not with gunicorn)
     print("🌐 Starting Flask and Discord bot...")
     app.run(host="0.0.0.0", port=port, debug=False)
+
 
 
