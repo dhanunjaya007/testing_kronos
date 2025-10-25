@@ -9,10 +9,21 @@ class Moderation(commands.Cog):
         self.muted_users = {}
         self.user_warnings = {}
 
+    # Helper function to check if user has admin privileges
+    def has_admin_or_permission(self, member, permission_name):
+        """Check if member has administrator privilege or specific permission"""
+        if member.guild_permissions.administrator:
+            return True
+        return getattr(member.guild_permissions, permission_name, False)
+
     # BAN
-    @commands.has_permissions(ban_members=True)
     @commands.command(name="ban")
     async def ban(self, ctx, member: discord.Member = None, *, reason="No reason provided"):
+        # Check if user has ban_members permission OR administrator
+        if not self.has_admin_or_permission(ctx.author, 'ban_members'):
+            await ctx.send("❌ You need Ban Members permission or Administrator role.")
+            return
+        
         if not member:
             await ctx.send("❌ Please mention a user to ban.")
             return
@@ -25,9 +36,13 @@ class Moderation(commands.Cog):
             await ctx.send(f"❌ Could not ban user: {e}")
 
     # UNBAN
-    @commands.has_permissions(ban_members=True)
     @commands.command(name="unban")
     async def unban(self, ctx, *, user=None):
+        # Check if user has ban_members permission OR administrator
+        if not self.has_admin_or_permission(ctx.author, 'ban_members'):
+            await ctx.send("❌ You need Ban Members permission or Administrator role.")
+            return
+        
         if not user:
             await ctx.send("❌ Please specify the username#tag or ID to unban.")
             return
@@ -47,9 +62,13 @@ class Moderation(commands.Cog):
             await ctx.send(f"❌ Could not unban: {e}")
 
     # KICK
-    @commands.has_permissions(kick_members=True)
     @commands.command(name="kick")
     async def kick(self, ctx, member: discord.Member = None, *, reason="No reason provided"):
+        # Check if user has kick_members permission OR administrator
+        if not self.has_admin_or_permission(ctx.author, 'kick_members'):
+            await ctx.send("❌ You need Kick Members permission or Administrator role.")
+            return
+        
         if not member:
             await ctx.send("❌ Please mention a user to kick.")
             return
@@ -62,9 +81,13 @@ class Moderation(commands.Cog):
             await ctx.send(f"❌ Could not kick user: {e}")
 
     # MUTE
-    @commands.has_permissions(manage_roles=True)
     @commands.command(name="mute")
     async def mute(self, ctx, member: discord.Member = None, *, reason="No reason provided"):
+        # Check if user has manage_roles permission OR administrator
+        if not self.has_admin_or_permission(ctx.author, 'manage_roles'):
+            await ctx.send("❌ You need Manage Roles permission or Administrator role.")
+            return
+        
         if not member:
             await ctx.send("❌ Please mention a user to mute.")
             return
@@ -85,9 +108,13 @@ class Moderation(commands.Cog):
             await ctx.send(f"❌ Could not mute: {e}")
 
     # UNMUTE
-    @commands.has_permissions(manage_roles=True)
     @commands.command(name="unmute")
     async def unmute(self, ctx, member: discord.Member = None):
+        # Check if user has manage_roles permission OR administrator
+        if not self.has_admin_or_permission(ctx.author, 'manage_roles'):
+            await ctx.send("❌ You need Manage Roles permission or Administrator role.")
+            return
+        
         if not member:
             await ctx.send("❌ Please mention a user to unmute.")
             return
@@ -104,11 +131,15 @@ class Moderation(commands.Cog):
             await ctx.send(f"❌ Could not unmute: {e}")
 
     # TEMP MUTE
-    @commands.has_permissions(manage_roles=True)
     @commands.command(name="tempmute")
     async def tempmute(self, ctx, member: discord.Member = None, duration: int = None, *, reason="No reason provided"):
+        # Check if user has manage_roles permission OR administrator
+        if not self.has_admin_or_permission(ctx.author, 'manage_roles'):
+            await ctx.send("❌ You need Manage Roles permission or Administrator role.")
+            return
+        
         if not member or not duration:
-            await ctx.send("❌ Usage: `!tempmute <user> <duration_seconds> [reason]`")
+            await ctx.send("❌ Usage: `/tempmute <user> <duration_seconds> [reason]`")
             return
         mute_role = discord.utils.get(ctx.guild.roles, name="Muted")
         try:
@@ -128,9 +159,13 @@ class Moderation(commands.Cog):
             await ctx.send(f"❌ Could not tempmute: {e}")
 
     # WARN
-    @commands.has_permissions(manage_messages=True)
     @commands.command(name="warn")
     async def warn(self, ctx, member: discord.Member = None, *, reason="No reason provided"):
+        # Check if user has manage_messages permission OR administrator
+        if not self.has_admin_or_permission(ctx.author, 'manage_messages'):
+            await ctx.send("❌ You need Manage Messages permission or Administrator role.")
+            return
+        
         if not member:
             await ctx.send("❌ Please mention a user to warn.")
             return
@@ -161,11 +196,15 @@ class Moderation(commands.Cog):
             await ctx.send(embed=embed)
 
     # CLEAR / PURGE
-    @commands.has_permissions(manage_messages=True)
     @commands.command(aliases=["purge"])
     async def clear(self, ctx, amount: int = None):
+        # Check if user has manage_messages permission OR administrator
+        if not self.has_admin_or_permission(ctx.author, 'manage_messages'):
+            await ctx.send("❌ You need Manage Messages permission or Administrator role.")
+            return
+        
         if amount is None:
-            await ctx.send("❌ You must specify the number of messages to delete, e.g., `!clear 10`.")
+            await ctx.send("❌ You must specify the number of messages to delete, e.g., `/clear 10`.")
             return
         try:
             await ctx.channel.purge(limit=amount + 1)
