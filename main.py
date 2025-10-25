@@ -18,7 +18,6 @@ import time
 from git_functions import setup_git_commands, register_github_routes
 from ai_functions import setup_ai_commands
 
-
 # Load environment variables
 load_dotenv()
 token = os.getenv('DISCORD_TOKEN')
@@ -77,40 +76,46 @@ def init_db_pool():
         logger.warning("DATABASE_URL not set. Using in-memory storage only.")
         return None
     
-    try:
-        # Parse DATABASE_URL and fix SSL settings
-        db_url = DATABASE_URL
-        # Render.com PostgreSQL requires SSL
-        connection_pool = psycopg2.pool.SimpleConnectionPool(
-            1, 10,  # min and max connections
-            db_url,
-            sslmode='require',
-            connect_timeout=30
-        )
-        
-        logger.info("✅ PostgreSQL connection pool initialized")
-        
-        # Initialize database table with webhook URL storage
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS webhook_data (
-                        token VARCHAR(255) PRIMARY KEY,
-                        guild_id BIGINT NOT NULL,
-                        webhook_url TEXT NOT NULL,
-                        webhook_id BIGINT NOT NULL,
-                        webhook_token TEXT NOT NULL,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    )
-                """)
-                conn.commit()
-                logger.info("✅ Database table initialized")
-        
-        return connection_pool
-    except Exception as e:
-        logger.error(f"❌ Failed to initialize database pool: {e}")
-        logger.warning("⚠️ Falling back to in-memory storage")
-        return None
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            # Parse DATABASE_URL and fix SSL settings
+            db_url = DATABASE_URL
+            # Render.com PostgreSQL requires SSL
+            connection_pool = psycopg2.pool.SimpleConnectionPool(
+                1, 10,  # min and max connections
+                db_url,
+                sslmode='require',
+                connect_timeout=30
+            )
+            
+            logger.info("✅ PostgreSQL connection pool initialized")
+            
+            # Initialize database table with webhook URL storage
+            with get_db_connection() as conn:
+                if conn:
+                    with conn.cursor() as cur:
+                        cur.execute("""
+                            CREATE TABLE IF NOT EXISTS webhook_data (
+                                token VARCHAR(255) PRIMARY KEY,
+                                guild_id BIGINT NOT NULL,
+                                webhook_url TEXT NOT NULL,
+                                webhook_id BIGINT NOT NULL,
+                                webhook_token TEXT NOT NULL,
+                                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                            )
+                        """)
+                        conn.commit()
+                        logger.info("✅ Database table initialized")
+            
+            return connection_pool
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize database pool (attempt {attempt + 1}/{max_retries}): {e}")
+            if attempt < max_retries - 1:
+                time.sleep(2)
+            else:
+                logger.warning("⚠️ Falling back to in-memory storage")
+                return None
 
 @contextmanager
 def get_db_connection():
@@ -263,11 +268,8 @@ def load_webhook_data_from_db():
     logger.error("❌ Could not load webhook data from database after all retries")
     return False
 
-# Git functions moved to git_functions.py
-# GitHub webhook route moved to git_functions.py
-
-# Register GitHub webhook routes
-register_github_routes(app, bot, get_webhook_data, ensure_tokens_loaded, logger, DEPLOYMENT_URL)
+# FIXED: Register GitHub webhook routes with correct parameters
+register_github_routes(app, bot, get_webhook_data, load_webhook_data_from_db, DEPLOYMENT_URL)
 
 @app.route('/health', methods=['GET'])
 def health_check():
@@ -331,16 +333,15 @@ async def on_ready():
         await bot.load_extension("commands.moderation")
         print("✅ Moderation commands loaded")
     except Exception as e:
-        print(f"⚠️ Moderation cog already loaded or error: {e}")
+        print(f"⚠️ Moderation cog error: {e}")
+    
+    # FIXED: Setup custom commands BEFORE syncing
+    setup_git_commands(bot, save_webhook_data, DEPLOYMENT_URL)
+    setup_ai_commands(bot, OPENROUTER_API_KEY, OPENROUTER_URL, FREE_MODELS, DEFAULT_MODEL)
     
     # Sync slash commands with Discord
     print("🔄 Syncing slash commands with Discord...")
     try:
-
-    # Setup custom commands from separate modules
-    setup_git_commands(bot, save_webhook_data, DEPLOYMENT_URL)
-    setup_ai_commands(bot, OPENROUTER_API_KEY, OPENROUTER_URL, FREE_MODELS, DEFAULT_MODEL)
-
         synced = await bot.tree.sync()
         print(f"✅ Synced {len(synced)} slash command(s) globally")
         print(f"📋 Commands: {[cmd.name for cmd in synced]}")
@@ -414,7 +415,6 @@ async def on_message(message):
 
 # ============= SLASH COMMANDS =============
 
-# GITHUB COMMANDS
 @bot.hybrid_command(name="hello", description="Say hello")
 async def hello(ctx: commands.Context):
     """Say hello"""
@@ -440,14 +440,7 @@ async def serverinfo(ctx: commands.Context):
         embed.set_thumbnail(url=guild.icon.url)
     await ctx.send(embed=embed)
 
-# AI functions moved to ai_functions.py
 # ERROR HANDLERS
-@setupgit.error
-@creategit.error
-async def admin_error(ctx: commands.Context, error):
-    if isinstance(error, app_commands.MissingPermissions):
-        await ctx.send("❌ You need Administrator permission to use this command.", ephemeral=True)
-
 @bot.event
 async def on_command_error(ctx, error):
     """Handle errors"""
