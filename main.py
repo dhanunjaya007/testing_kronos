@@ -27,8 +27,8 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 
-# Initialize bot and Flask app
-bot = commands.Bot(command_prefix='!', intents=intents)
+# Initialize bot and Flask app (CHANGED PREFIX TO /)
+bot = commands.Bot(command_prefix='/', intents=intents)
 app = Flask(__name__)
 
 # Port configuration for deployment
@@ -503,7 +503,7 @@ def home():
         'status': 'running',
         'bot_online': bot.is_ready(),
         'endpoints': ['/health', '/github/<token>'],
-        'setup_guide': 'Use !setupgit command in Discord'
+        'setup_guide': 'Use /setupgit command in Discord'
     }), 200
 
 # ============= BOT EVENTS =============
@@ -538,14 +538,14 @@ async def on_ready():
                 invalid_count += 1
         
         if invalid_count > 0:
-            print(f"⚠️ Found {invalid_count} invalid webhooks. Run !cleanupwebhooks to remove them.")
+            print(f"⚠️ Found {invalid_count} invalid webhooks. Run /cleanupwebhooks to remove them.")
     else:
         print("⚠️ Using memory-only storage")
     
     await bot.change_presence(
         activity=discord.Activity(
             type=discord.ActivityType.listening,
-            name="!help | AI + GitHub"
+            name="/help | AI + GitHub"
         )
     )
 
@@ -560,9 +560,9 @@ async def on_guild_join(guild):
             description=(
                 "**Quick Setup:**\n"
                 "1. Create a `git` channel\n"
-                "2. Use `!setupgit` for webhook URL\n"
+                "2. Use `/setupgit` for webhook URL\n"
                 "3. Add to GitHub repo settings\n\n"
-                "**Commands:** `!help`, `!chat`, `!models`"
+                "**Commands:** `/help`, `/chat`, `/models`"
             ),
             color=discord.Color.green()
         )
@@ -573,7 +573,7 @@ async def on_member_join(member):
     """Welcome new members"""
     try:
         await member.send(
-            f"👋 Welcome to **{member.guild.name}**!\nType `!help` for commands."
+            f"👋 Welcome to **{member.guild.name}**!\nType `/help` for commands."
         )
         
         if member.guild.system_channel:
@@ -601,7 +601,7 @@ async def on_message(message):
         except discord.Forbidden:
             pass
     
-    if "love you" in content_lower and not message.content.startswith('!'):
+    if "love you" in content_lower and not message.content.startswith('/'):
         await message.channel.send(f"{message.author.mention} Love you too! ❤️")
     
     await bot.process_commands(message)
@@ -618,7 +618,7 @@ async def setupgit(ctx):
     if not git_channel:
         embed = discord.Embed(
             title="❌ No 'git' Channel",
-            description="Create a channel named `git` first!\nUse `!creategit`",
+            description="Create a channel named `git` first!\nUse `/creategit`",
             color=discord.Color.red()
         )
         await ctx.send(embed=embed)
@@ -735,11 +735,11 @@ async def creategit(ctx):
         
         embed = discord.Embed(
             title="✅ Git Channel Created!",
-            description=f"{new_channel.mention} ready for GitHub!\nUse `!setupgit` next.",
+            description=f"{new_channel.mention} ready for GitHub!\nUse `/setupgit` next.",
             color=discord.Color.green()
         )
         await ctx.send(embed=embed)
-        await new_channel.send("🎉 Git channel ready! Use `!setupgit` to connect GitHub.")
+        await new_channel.send("🎉 Git channel ready! Use `/setupgit` to connect GitHub.")
     except discord.Forbidden:
         await ctx.send("❌ No permission to create channels.")
     except Exception as e:
@@ -751,7 +751,7 @@ async def testgit(ctx):
     git_channel = await find_git_channel(ctx.guild)
     
     if not git_channel:
-        await ctx.send("❌ No git channel found. Use `!creategit`")
+        await ctx.send("❌ No git channel found. Use `/creategit`")
         return
     
     permissions = git_channel.permissions_for(ctx.guild.me)
@@ -1071,4 +1071,3 @@ start_bot()
 if __name__ == "__main__":
     print("🌐 Starting Flask...")
     app.run(host="0.0.0.0", port=port, debug=False)
-
