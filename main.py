@@ -512,7 +512,8 @@ def home():
 async def on_ready():
     print(f"✅ Logged in as {bot.user.name} (ID: {bot.user.id})")
     print(f"Connected to {len(bot.guilds)} guild(s):")
-    
+    await bot.load_extension("commands.moderation")
+    print("✅ Moderation commands loaded")
     # Log all guilds with details
     for guild in bot.guilds:
         print(f"  - {guild.name} (ID: {guild.id}) | Members: {guild.member_count}")
@@ -1070,3 +1071,4 @@ start_bot()
 if __name__ == "__main__":
     print("🌐 Starting Flask...")
     app.run(host="0.0.0.0", port=port, debug=False)
+
