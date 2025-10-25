@@ -214,6 +214,26 @@ def save_webhook_token(token, guild_id):
     except Exception as e:
         security_logger.error(f"❌ Failed to save token to PostgreSQL: {e}")
         return False
+def delete_webhook_token(token):
+    """Delete a webhook token from PostgreSQL"""
+    if not db_pool:
+        if not init_database():
+            return False
+
+    try:
+        conn = db_pool.getconn()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM webhook_tokens WHERE token = %s", (token,))
+        conn.commit()
+        cursor.close()
+        db_pool.putconn(conn)
+        # Also remove from in-memory cache
+        webhook_tokens.pop(token, None)
+        security_logger.info(f"🗑️ Deleted token: {token}")
+        return True
+    except Exception as e:
+        security_logger.error(f"❌ Error deleting token: {e}")
+        return False
 
 @bot.command()
 @commands.has_permissions(administrator=True)
@@ -1505,6 +1525,7 @@ if __name__ == "__main__":
     # This runs only when executed directly (not with gunicorn)
     print("🌐 Starting Flask and Discord bot...")
     app.run(host="0.0.0.0", port=port, debug=False)
+
 
 
 
