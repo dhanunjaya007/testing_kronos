@@ -36,6 +36,7 @@ def register_github_routes(app, bot, get_webhook_data, ensure_tokens_loaded, DEP
     def github_webhook(token):
         """Handle GitHub webhook for commit notifications"""
         try:
+            # FIXED: Call the ensure_tokens_loaded function
             ensure_tokens_loaded()
 
             client_ip = request.headers.get('X-Forwarded-For', request.remote_addr)
