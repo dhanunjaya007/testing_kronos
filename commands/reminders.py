@@ -4,33 +4,29 @@ from discord import app_commands
 from datetime import datetime, timedelta
 import asyncio
 import re
-import psycopg2
-from contextlib import contextmanager
 import logging
 from typing import Optional, Literal
 
 logger = logging.getLogger(__name__)
 
-# Assuming connection_pool is global from main.py
-from ..main import connection_pool, get_db_connection
-
 class Reminders(commands.Cog):
-    def __init__(self, bot):
+    def __init__(self, bot, get_db_connection_func):
         self.bot = bot
+        self.get_db_connection = get_db_connection_func
         self.reminders = {}  # In-memory cache: {reminder_id: reminder_data}
         self.reminder_counter = 0
+        self.init_db_table()
         self.load_reminders()
         self.check_reminders.start()
 
     def cog_unload(self):
         """Stop the reminder checker when cog is unloaded"""
         self.check_reminders.cancel()
-        self.save_reminders()
 
     def init_db_table(self):
         """Initialize the reminders table if it doesn't exist"""
         try:
-            with get_db_connection() as conn:
+            with self.get_db_connection() as conn:
                 if conn:
                     with conn.cursor() as cur:
                         cur.execute("""
@@ -55,9 +51,8 @@ class Reminders(commands.Cog):
 
     def load_reminders(self):
         """Load reminders from PostgreSQL into memory"""
-        self.init_db_table()  # Ensure table exists
         try:
-            with get_db_connection() as conn:
+            with self.get_db_connection() as conn:
                 if conn:
                     with conn.cursor() as cur:
                         cur.execute("SELECT * FROM reminders ORDER BY trigger_time ASC")
@@ -78,9 +73,12 @@ class Reminders(commands.Cog):
                                 'next_trigger': row[10]
                             }
                             # Update counter based on max ID
-                            counter = int(reminder_id[1:])  # e.g., 'R1' -> 1
-                            if counter > self.reminder_counter:
-                                self.reminder_counter = counter
+                            try:
+                                counter = int(reminder_id[1:])  # e.g., 'R1' -> 1
+                                if counter > self.reminder_counter:
+                                    self.reminder_counter = counter
+                            except (ValueError, IndexError):
+                                pass
                         logger.info(f"✅ Loaded {len(self.reminders)} reminders from PostgreSQL")
         except Exception as e:
             logger.error(f"⚠️ Could not load reminders: {e}")
@@ -88,7 +86,7 @@ class Reminders(commands.Cog):
     def save_reminder(self, reminder_data):
         """Save or update a single reminder to PostgreSQL"""
         try:
-            with get_db_connection() as conn:
+            with self.get_db_connection() as conn:
                 if conn:
                     with conn.cursor() as cur:
                         cur.execute("""
@@ -123,7 +121,7 @@ class Reminders(commands.Cog):
     def delete_reminder(self, reminder_id):
         """Delete a reminder from PostgreSQL"""
         try:
-            with get_db_connection() as conn:
+            with self.get_db_connection() as conn:
                 if conn:
                     with conn.cursor() as cur:
                         cur.execute("DELETE FROM reminders WHERE reminder_id = %s", (reminder_id,))
@@ -261,8 +259,14 @@ class Reminders(commands.Cog):
 
         # Clean up triggered one-time reminders
         for rid in triggered:
-            del self.reminders[rid]
-            self.delete_reminder(rid)
+            if rid in self.reminders:
+                del self.reminders[rid]
+                self.delete_reminder(rid)
+
+    @check_reminders.before_loop
+    async def before_check_reminders(self):
+        """Wait for bot to be ready before starting reminder check loop"""
+        await self.bot.wait_until_ready()
 
     @commands.hybrid_group(name="reminder", description="Manage your reminders", invoke_without_command=True)
     async def reminder(self, ctx: commands.Context):
@@ -535,4 +539,9 @@ class ConfirmView(discord.ui.View):
         self.stop()
 
 async def setup(bot):
-    await bot.add_cog(Reminders(bot))
+    # Get the get_db_connection function from bot
+    get_db_connection_func = getattr(bot, 'get_db_connection', None)
+    if not get_db_connection_func:
+        logger.error("❌ get_db_connection not found on bot instance")
+        return
+    await bot.add_cog(Reminders(bot, get_db_connection_func))
