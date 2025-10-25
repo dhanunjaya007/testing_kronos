@@ -121,8 +121,14 @@ def init_mongodb():
         return False
     
     try:
-        # Connect to MongoDB
-        mongo_client = MongoClient(mongodb_uri, serverSelectionTimeoutMS=5000)
+        # Connect to MongoDB with TLS settings to fix SSL handshake
+        mongo_client = MongoClient(
+            mongodb_uri,
+            serverSelectionTimeoutMS=10000,
+            tls=True,
+            tlsAllowInvalidCertificates=True
+        )
+
         
         # Test connection
         mongo_client.admin.command('ping')
@@ -1453,4 +1459,5 @@ if __name__ == "__main__":
     # This runs only when executed directly (not with gunicorn)
     print("🌐 Starting Flask and Discord bot...")
     app.run(host="0.0.0.0", port=port, debug=False)
+
 
