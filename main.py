@@ -304,8 +304,12 @@ def github_webhook(token):
         # Get the guild
         guild = bot.get_guild(guild_id)
         if not guild:
-            logger.error(f"Guild {guild_id} not found")
-            return jsonify({'error': 'Guild not found'}), 404
+            logger.error(f"Guild {guild_id} not found - bot may not be in server")
+            return jsonify({
+                'error': 'Guild not found',
+                'message': 'The bot is not in this Discord server. Please re-invite the bot or run !setupgit again.',
+                'guild_id': guild_id
+            }), 404
         
         # Handle ping event
         if event_type == 'ping':
@@ -405,11 +409,22 @@ def health_check():
     # Check if tokens are loaded
     tokens_status = "loaded" if webhook_tokens_memory else "empty"
     
+    # Get guild info
+    guild_info = []
+    if bot.is_ready():
+        for guild in bot.guilds:
+            guild_info.append({
+                'id': guild.id,
+                'name': guild.name,
+                'member_count': guild.member_count
+            })
+    
     return jsonify({
         'status': 'ok',
         'bot_ready': bot.is_ready(),
         'bot_latency': round(bot.latency * 1000) if bot.is_ready() else None,
         'guilds': len(bot.guilds) if bot.is_ready() else 0,
+        'guild_details': guild_info if bot.is_ready() else [],
         'registered_webhooks': len(webhook_tokens_memory),
         'tokens_status': tokens_status,
         'database': db_status
