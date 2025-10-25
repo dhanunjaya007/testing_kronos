@@ -53,7 +53,7 @@ webhook_tokens = {}
 bot_thread = None
 
 # Deployment URL (set this to your actual deployment URL)
-DEPLOYMENT_URL = os.getenv('DEPLOYMENT_URL', 'https://testing-kronos.onrender.com')
+DEPLOYMENT_URL = os.getenv('DEPLOYMENT_URL')
 
 # ============= GIT FUNCTIONS =============
 
@@ -1059,3 +1059,4 @@ if __name__ == "__main__":
     # This runs only when executed directly (not with gunicorn)
     print("🌐 Starting Flask and Discord bot...")
     app.run(host="0.0.0.0", port=port, debug=False)
+
