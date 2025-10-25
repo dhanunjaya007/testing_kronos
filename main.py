@@ -359,6 +359,13 @@ async def on_ready():
         print(f"⚠️ Reminders cog error: {e}")
         import traceback
         traceback.print_exc()
+    try:
+        await bot.load_extension("commands.meeting")
+        print("Meeting commands loaded")
+    except Exception as e:
+        print(f"Meeting cog error: {e}")
+        import traceback; traceback.print_exc()
+
     
     # Sync slash commands with Discord
     print("🔄 Syncing slash commands with Discord...")
@@ -510,6 +517,7 @@ start_bot()
 if __name__ == "__main__":
     print("🌐 Starting Flask...")
     app.run(host="0.0.0.0", port=port, debug=False)
+
 
 
 
