@@ -307,6 +307,7 @@ def home():
         'setup_guide': 'Use /setupgit slash command in Discord'
     }), 200
 
+bot.get_db_connection = get_db_connection
 # ============= BOT EVENTS =============
 
 @bot.event
@@ -328,12 +329,18 @@ async def on_ready():
     else:
         print("⚠️ Using memory-only storage")
     
+    # Setup custom commands BEFORE loading cogs
+    setup_git_commands(bot, save_webhook_data, DEPLOYMENT_URL)
+    setup_ai_commands(bot, OPENROUTER_API_KEY, OPENROUTER_URL, FREE_MODELS, DEFAULT_MODEL)
+    
     # Load moderation cog
     try:
         await bot.load_extension("commands.moderation")
         print("✅ Moderation commands loaded")
     except Exception as e:
         print(f"⚠️ Moderation cog error: {e}")
+        import traceback
+        traceback.print_exc()
     
     # Load code_editor cog
     try:
@@ -341,17 +348,17 @@ async def on_ready():
         print("✅ code_editor commands loaded")
     except Exception as e:
         print(f"⚠️ code_editor cog error: {e}")
+        import traceback
+        traceback.print_exc()
     
-    # Load reminders cog
+    # Load reminders cog (with db connection function)
     try:
         await bot.load_extension("commands.reminders")
         print("✅ Reminder commands loaded")
     except Exception as e:
         print(f"⚠️ Reminders cog error: {e}")
-    
-    # Setup custom commands BEFORE syncing
-    setup_git_commands(bot, save_webhook_data, DEPLOYMENT_URL)
-    setup_ai_commands(bot, OPENROUTER_API_KEY, OPENROUTER_URL, FREE_MODELS, DEFAULT_MODEL)
+        import traceback
+        traceback.print_exc()
     
     # Sync slash commands with Discord
     print("🔄 Syncing slash commands with Discord...")
@@ -370,7 +377,6 @@ async def on_ready():
             name="/help | AI + GitHub + Reminders"
         )
     )
-
 @bot.event
 async def on_guild_join(guild):
     """When bot joins a new server"""
@@ -504,5 +510,6 @@ start_bot()
 if __name__ == "__main__":
     print("🌐 Starting Flask...")
     app.run(host="0.0.0.0", port=port, debug=False)
+
 
 
