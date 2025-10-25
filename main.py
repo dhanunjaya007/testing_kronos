@@ -334,13 +334,15 @@ async def on_ready():
         print("✅ Moderation commands loaded")
     except Exception as e:
         print(f"⚠️ Moderation cog error: {e}")
+    
+    # Load reminders cog
     try:
         await bot.load_extension("commands.reminders")
         print("✅ Reminder commands loaded")
     except Exception as e:
         print(f"⚠️ Reminders cog error: {e}")
     
-    # FIXED: Setup custom commands BEFORE syncing
+    # Setup custom commands BEFORE syncing
     setup_git_commands(bot, save_webhook_data, DEPLOYMENT_URL)
     setup_ai_commands(bot, OPENROUTER_API_KEY, OPENROUTER_URL, FREE_MODELS, DEFAULT_MODEL)
     
@@ -358,7 +360,7 @@ async def on_ready():
     await bot.change_presence(
         activity=discord.Activity(
             type=discord.ActivityType.listening,
-            name="/help | AI + GitHub"
+            name="/help | AI + GitHub + Reminders"
         )
     )
 
@@ -382,7 +384,7 @@ async def on_guild_join(guild):
                 "1. Create a `git` channel\n"
                 "2. Use `/setupgit` for webhook URL\n"
                 "3. Add to GitHub repo settings\n\n"
-                "**Commands:** `/help`, `/chat`, `/models`"
+                "**Commands:** `/help`, `/chat`, `/reminder`, `/models`"
             ),
             color=discord.Color.green()
         )
@@ -495,4 +497,3 @@ start_bot()
 if __name__ == "__main__":
     print("🌐 Starting Flask...")
     app.run(host="0.0.0.0", port=port, debug=False)
-
