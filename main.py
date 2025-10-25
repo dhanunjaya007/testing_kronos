@@ -107,22 +107,45 @@ def init_db_pool():
 
 @contextmanager
 def get_db_connection():
-    """Context manager for database connections"""
+    """Context manager for database connections with retry logic"""
     conn = None
     try:
         if connection_pool:
             conn = connection_pool.getconn()
+            # Test connection before using
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
             yield conn
         else:
             yield None
     except Exception as e:
         logger.error(f"Database connection error: {e}")
         if conn:
-            conn.rollback()
+            try:
+                conn.rollback()
+            except:
+                pass
+            try:
+                connection_pool.putconn(conn, close=True)
+            except:
+                pass
+        # Try to reconnect once
+        try:
+            if connection_pool:
+                conn = connection_pool.getconn()
+                with conn.cursor() as cur:
+                    cur.execute("SELECT 1")
+                yield conn
+                return
+        except:
+            pass
         yield None
     finally:
         if conn and connection_pool:
-            connection_pool.putconn(conn)
+            try:
+                connection_pool.putconn(conn)
+            except:
+                pass
 
 # ============= TOKEN MANAGEMENT WITH DB =============
 
@@ -150,40 +173,67 @@ def save_webhook_token(token, guild_id):
 
 def get_guild_from_token(token):
     """Get guild ID from webhook token (checks memory first, then DB)"""
-    # Check memory first (fastest)
+    # Check memory first (fastest and most reliable)
     if token in webhook_tokens_memory:
+        logger.info(f"✅ Token found in memory cache")
         return webhook_tokens_memory[token]
     
-    # Check database
-    try:
-        with get_db_connection() as conn:
-            if conn:
-                with conn.cursor() as cur:
-                    cur.execute("SELECT guild_id FROM webhook_tokens WHERE token = %s", (token,))
-                    result = cur.fetchone()
-                    if result:
-                        guild_id = result[0]
-                        # Cache in memory for future requests
-                        webhook_tokens_memory[token] = guild_id
-                        return guild_id
-    except Exception as e:
-        logger.error(f"❌ PostgreSQL lookup failed: {e}")
+    # Check database with retry
+    logger.info(f"Token not in cache, checking database...")
+    for attempt in range(2):  # Try twice
+        try:
+            with get_db_connection() as conn:
+                if conn:
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT guild_id FROM webhook_tokens WHERE token = %s", (token,))
+                        result = cur.fetchone()
+                        if result:
+                            guild_id = result[0]
+                            # Cache in memory for future requests
+                            webhook_tokens_memory[token] = guild_id
+                            logger.info(f"✅ Token found in database, cached to memory")
+                            return guild_id
+                        else:
+                            logger.warning(f"Token not found in database")
+                            return None
+                else:
+                    logger.warning(f"Database connection unavailable (attempt {attempt + 1}/2)")
+                    if attempt == 0:
+                        continue
+        except Exception as e:
+            logger.error(f"❌ PostgreSQL lookup failed (attempt {attempt + 1}/2): {e}")
+            if attempt == 0:
+                import time
+                time.sleep(0.5)  # Brief pause before retry
+                continue
     
+    logger.error(f"❌ Failed to retrieve token after all attempts")
     return None
 
 def load_tokens_from_db():
     """Load all tokens from database into memory on startup"""
-    try:
-        with get_db_connection() as conn:
-            if conn:
-                with conn.cursor() as cur:
-                    cur.execute("SELECT token, guild_id FROM webhook_tokens")
-                    results = cur.fetchall()
-                    for token, guild_id in results:
-                        webhook_tokens_memory[token] = guild_id
-                    logger.info(f"✅ Loaded {len(results)} tokens from database to memory")
-    except Exception as e:
-        logger.error(f"❌ Failed to load tokens from database: {e}")
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            with get_db_connection() as conn:
+                if conn:
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT token, guild_id FROM webhook_tokens")
+                        results = cur.fetchall()
+                        for token, guild_id in results:
+                            webhook_tokens_memory[token] = guild_id
+                        logger.info(f"✅ Loaded {len(results)} tokens from database to memory")
+                        return True
+                else:
+                    logger.warning(f"Database unavailable (attempt {attempt + 1}/{max_retries})")
+        except Exception as e:
+            logger.error(f"❌ Failed to load tokens (attempt {attempt + 1}/{max_retries}): {e}")
+            if attempt < max_retries - 1:
+                import time
+                time.sleep(1)
+    
+    logger.error("❌ Could not load tokens from database after all retries")
+    return False
 
 # ============= GIT FUNCTIONS =============
 
@@ -207,6 +257,14 @@ def generate_webhook_token(guild_id):
 
 # ============= FLASK ROUTES =============
 
+@app.before_first_request
+def ensure_tokens_loaded():
+    """Ensure tokens are loaded before handling any request"""
+    if not webhook_tokens_memory:
+        logger.info("🔄 First request - ensuring tokens are loaded...")
+        load_tokens_from_db()
+        logger.info(f"✅ Ready with {len(webhook_tokens_memory)} tokens")
+
 @app.route('/github/<token>', methods=['POST'])
 def github_webhook(token):
     """Handle GitHub webhook for commit notifications"""
@@ -214,6 +272,11 @@ def github_webhook(token):
         # Log incoming request
         client_ip = request.headers.get('X-Forwarded-For', request.remote_addr)
         logger.info(f"Webhook request from {client_ip} with token: {token[:10]}...")
+        
+        # Ensure tokens are loaded (lazy load if not already done)
+        if not webhook_tokens_memory:
+            logger.info("Memory cache empty, loading from database...")
+            load_tokens_from_db()
         
         data = request.json
         if not data:
@@ -228,6 +291,7 @@ def github_webhook(token):
         guild_id = get_guild_from_token(token)
         if not guild_id:
             logger.warning(f"Invalid webhook token: {token[:10]}... from IP: {client_ip}, repo: {repo_name}")
+            logger.info(f"Current memory cache has {len(webhook_tokens_memory)} tokens")
             return jsonify({'error': 'Invalid webhook token'}), 403
         
         # Get the guild
@@ -330,12 +394,17 @@ def github_webhook(token):
 def health_check():
     """Health check endpoint"""
     db_status = "connected" if connection_pool else "disconnected"
+    
+    # Check if tokens are loaded
+    tokens_status = "loaded" if webhook_tokens_memory else "empty"
+    
     return jsonify({
         'status': 'ok',
         'bot_ready': bot.is_ready(),
         'bot_latency': round(bot.latency * 1000) if bot.is_ready() else None,
         'guilds': len(bot.guilds) if bot.is_ready() else 0,
         'registered_webhooks': len(webhook_tokens_memory),
+        'tokens_status': tokens_status,
         'database': db_status
     }), 200
 
@@ -361,8 +430,11 @@ async def on_ready():
     if not OPENROUTER_API_KEY:
         print("⚠️ WARNING: OPENROUTER_API_KEY not set!")
     
-    # Load tokens from database
-    load_tokens_from_db()
+    # Reload tokens to ensure we have latest (in case of bot restart)
+    print("🔄 Refreshing token cache...")
+    success = load_tokens_from_db()
+    if success:
+        print(f"✅ {len(webhook_tokens_memory)} tokens in cache")
     
     await bot.change_presence(
         activity=discord.Activity(
@@ -701,6 +773,13 @@ def start_bot():
     # Initialize database
     init_db_pool()
     
+    # Pre-load tokens into memory BEFORE starting bot
+    print("📦 Pre-loading tokens from database...")
+    if load_tokens_from_db():
+        print(f"✅ {len(webhook_tokens_memory)} tokens loaded and ready")
+    else:
+        print("⚠️ Using memory-only storage")
+    
     def run_bot():
         try:
             print("🤖 Starting bot...")
@@ -718,4 +797,3 @@ start_bot()
 if __name__ == "__main__":
     print("🌐 Starting Flask...")
     app.run(host="0.0.0.0", port=port, debug=False)
-
