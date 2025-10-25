@@ -1,8 +1,13 @@
 import discord
 from discord import app_commands
 from discord.ext import commands
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend
 import matplotlib.pyplot as plt
 import io
+import logging
+
+logger = logging.getLogger(__name__)
 
 class CodeEditor(commands.Cog):
     def __init__(self, bot):
@@ -10,7 +15,7 @@ class CodeEditor(commands.Cog):
 
     # ===== REAL-TIME ACTIVITY MONITORING =====
 
-    @app_commands.command(name="code_status", description="View current coding status (file, language, editor, duration).")
+    @app_commands.command(name="code_status", description="View current coding status")
     @app_commands.describe(user="User to check (optional)")
     async def code_status(self, interaction: discord.Interaction, user: discord.Member = None):
         user = user or interaction.user
@@ -21,7 +26,7 @@ class CodeEditor(commands.Cog):
         ).set_thumbnail(url=user.display_avatar.url)
         await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="code_now", description="See who's currently coding right now.")
+    @app_commands.command(name="code_now", description="See who's currently coding")
     async def code_now(self, interaction: discord.Interaction):
         embed = discord.Embed(
             title="👨‍💻 Members Currently Coding",
@@ -30,7 +35,7 @@ class CodeEditor(commands.Cog):
         )
         await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="code_verify", description="Check if your Rich Presence is working correctly.")
+    @app_commands.command(name="code_verify", description="Check if Rich Presence is working")
     async def code_verify(self, interaction: discord.Interaction):
         embed = discord.Embed(
             title="✅ Rich Presence Check",
@@ -39,13 +44,13 @@ class CodeEditor(commands.Cog):
         )
         await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="code_toggle", description="Enable/disable editor activity tracking.")
+    @app_commands.command(name="code_toggle", description="Enable/disable activity tracking")
     async def code_toggle(self, interaction: discord.Interaction):
         embed = discord.Embed(title="🔄 Activity Tracking", color=discord.Color.orange())
         embed.description = "You have **enabled** code editor tracking. Use this again to disable."
         await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="code_sync", description="Manually sync editor data with Discord bot.")
+    @app_commands.command(name="code_sync", description="Manually sync editor data")
     async def code_sync(self, interaction: discord.Interaction):
         embed = discord.Embed(title="🔃 Manual Sync", color=discord.Color.teal())
         embed.description = "Code editor data has been synced!"
@@ -53,7 +58,7 @@ class CodeEditor(commands.Cog):
 
     # ===== COMPREHENSIVE STATISTICS =====
 
-    @app_commands.command(name="code_stats", description="View detailed coding statistics.")
+    @app_commands.command(name="code_stats", description="View detailed coding statistics")
     @app_commands.describe(user="User to check (optional)")
     async def code_stats(self, interaction: discord.Interaction, user: discord.Member = None):
         user = user or interaction.user
@@ -69,7 +74,7 @@ class CodeEditor(commands.Cog):
         embed.set_thumbnail(url=user.display_avatar.url)
         await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="code_languages", description="View language breakdown.")
+    @app_commands.command(name="code_languages", description="View language breakdown")
     @app_commands.describe(user="User to check (optional)")
     async def code_languages(self, interaction: discord.Interaction, user: discord.Member = None):
         user = user or interaction.user
@@ -83,7 +88,11 @@ class CodeEditor(commands.Cog):
             embed.add_field(name=lang, value=f"{hours}h", inline=True)
         await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="code_sessions", description="View recent coding sessions.")
+    @app_commands.command(name="code_sessions", description="View recent coding sessions")
+    @app_commands.describe(
+        user="User to check (optional)",
+        days="Number of days to show (default: 7)"
+    )
     async def code_sessions(self, interaction: discord.Interaction, user: discord.Member = None, days: int = 7):
         user = user or interaction.user
         embed = discord.Embed(
@@ -91,20 +100,22 @@ class CodeEditor(commands.Cog):
             color=discord.Color.green(),
             description=f"Showing last {days} days of sessions."
         )
-        # Example recent sessions:
         sessions = ["2023-10-22: Python (2h)", "2023-10-21: JS (1h30m)", "2023-10-20: HTML (40m)"]
         for sess in sessions:
             embed.add_field(name="Session", value=sess, inline=False)
         await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="code_history", description="View detailed coding history.")
+    @app_commands.command(name="code_history", description="View detailed coding history")
+    @app_commands.describe(
+        user="User to check (optional)",
+        days="Number of days to show (default: 7)"
+    )
     async def code_history(self, interaction: discord.Interaction, user: discord.Member = None, days: int = 7):
         user = user or interaction.user
         embed = discord.Embed(
             title=f"🕓 Coding History: {user.display_name}",
             color=discord.Color.blurple(),
         )
-        # Table-like history (for a real bot, render as paginated or attach a file)
         hist_head = "`Date      Lang      Duration`"
         history = "\n".join([
             "`2023-10-20 Python    2h10m`",
@@ -115,28 +126,40 @@ class CodeEditor(commands.Cog):
 
     # ===== ANALYTICS & INSIGHTS =====
 
-    @app_commands.command(name="code_analytics", description="Advanced analytics dashboard.")
+    @app_commands.command(name="code_analytics", description="Advanced analytics dashboard")
+    @app_commands.describe(period="Time period (weekly/monthly)")
     async def code_analytics(self, interaction: discord.Interaction, period: str = "weekly"):
-        # Simulate a generated pie chart for analytics
-        stats = {"Python": 12, "JavaScript": 7, "TS": 2}
-        fig, ax = plt.subplots()
-        ax.pie(stats.values(), labels=stats.keys(), autopct='%1.1f%%')
-        ax.set_title(f"Coding Analytics ({period.title()})")
-        buf = io.BytesIO()
-        plt.savefig(buf, format='png')
-        buf.seek(0)
-        f = discord.File(buf, filename="analytics.png")
-        embed = discord.Embed(
-            title=f"📈 {period.title()} Analytics",
-            color=discord.Color.teal(),
-            description="Pie chart shows your coding time by language."
-        )
-        embed.set_image(url="attachment://analytics.png")
-        await interaction.response.send_message(embed=embed, file=f)
+        await interaction.response.defer()
+        
+        try:
+            stats = {"Python": 12, "JavaScript": 7, "TypeScript": 2}
+            fig, ax = plt.subplots(figsize=(8, 6))
+            ax.pie(stats.values(), labels=stats.keys(), autopct='%1.1f%%', startangle=90)
+            ax.set_title(f"Coding Analytics ({period.title()})")
+            
+            buf = io.BytesIO()
+            plt.savefig(buf, format='png', dpi=100, bbox_inches='tight')
+            buf.seek(0)
+            plt.close(fig)
+            
+            f = discord.File(buf, filename="analytics.png")
+            embed = discord.Embed(
+                title=f"📈 {period.title()} Analytics",
+                color=discord.Color.teal(),
+                description="Pie chart shows your coding time by language."
+            )
+            embed.set_image(url="attachment://analytics.png")
+            await interaction.followup.send(embed=embed, file=f)
+        except Exception as e:
+            logger.error(f"Error generating analytics: {e}")
+            await interaction.followup.send("❌ Error generating chart. Please try again.")
 
-    @app_commands.command(name="code_compare", description="Compare two users' coding stats.")
+    @app_commands.command(name="code_compare", description="Compare two users' coding stats")
+    @app_commands.describe(
+        user1="First user to compare",
+        user2="Second user to compare"
+    )
     async def code_compare(self, interaction: discord.Interaction, user1: discord.Member, user2: discord.Member):
-        # Mock comparison — make visually attractive
         embed = discord.Embed(
             title=f"⚡ Compare Coding Stats",
             color=discord.Color.purple(),
@@ -146,47 +169,62 @@ class CodeEditor(commands.Cog):
         embed.set_footer(text="Comparison of total and top language hours.")
         await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="code_chart", description="Generate visual charts.")
-    async def code_chart(self, interaction: discord.Interaction, type: str = "bar"):
-        # Demo with bar chart
-        langs = ["Python", "JavaScript", "HTML"]
-        hours = [12, 7, 3]
-        fig, ax = plt.subplots()
-        ax.bar(langs, hours, color=['#3572A5', '#F1E05A', '#E44D26'])
-        ax.set_ylabel('Hours')
-        ax.set_title(f'Coding Time by {type.title()}')
-        buf = io.BytesIO()
-        plt.savefig(buf, format='png')
-        buf.seek(0)
-        file = discord.File(buf, filename="codechart.png")
-        embed = discord.Embed(
-            title="🖼️ Visual Coding Chart",
-            color=discord.Color.blurple(),
-            description=f"Generated a {type.lower()} chart for your stats."
-        ).set_image(url="attachment://codechart.png")
-        await interaction.response.send_message(embed=embed, file=file)
+    @app_commands.command(name="code_chart", description="Generate visual charts")
+    @app_commands.describe(chart_type="Type of chart (bar/pie)")
+    async def code_chart(self, interaction: discord.Interaction, chart_type: str = "bar"):
+        await interaction.response.defer()
+        
+        try:
+            langs = ["Python", "JavaScript", "HTML"]
+            hours = [12, 7, 3]
+            
+            fig, ax = plt.subplots(figsize=(10, 6))
+            if chart_type.lower() == "pie":
+                ax.pie(hours, labels=langs, autopct='%1.1f%%', startangle=90)
+                ax.set_title(f'Coding Time Distribution')
+            else:
+                ax.bar(langs, hours, color=['#3572A5', '#F1E05A', '#E44D26'])
+                ax.set_ylabel('Hours')
+                ax.set_title(f'Coding Time by Language')
+                ax.grid(axis='y', alpha=0.3)
+            
+            buf = io.BytesIO()
+            plt.savefig(buf, format='png', dpi=100, bbox_inches='tight')
+            buf.seek(0)
+            plt.close(fig)
+            
+            file = discord.File(buf, filename="codechart.png")
+            embed = discord.Embed(
+                title="🖼️ Visual Coding Chart",
+                color=discord.Color.blurple(),
+                description=f"Generated a {chart_type.lower()} chart for your stats."
+            ).set_image(url="attachment://codechart.png")
+            await interaction.followup.send(embed=embed, file=file)
+        except Exception as e:
+            logger.error(f"Error generating chart: {e}")
+            await interaction.followup.send("❌ Error generating chart. Please try again.")
 
     # ===== SETUP COMMANDS AND GUIDES =====
 
-    @app_commands.command(name="setup_editor", description="Interactive editor selection and setup guide.")
+    @app_commands.command(name="setup_editor", description="Interactive editor selection guide")
     async def setup_editor(self, interaction: discord.Interaction):
         embed = discord.Embed(
             title="🛠️ Editor Setup Guide",
             color=discord.Color.orange(),
             description=(
                 "Select your editor for a tailored setup:\n"
-                "• `/setup vscode` - VS Code\n"
-                "• `/setup pycharm` - PyCharm\n"
-                "• `/setup intellij` - IntelliJ IDEA\n"
-                "• `/setup webstorm` - WebStorm\n"
-                "• `/setup atom` - Atom\n"
-                "• `/setup sublime` - Sublime Text\n"
-                "• `/setup vim` - Vim/Neovim"
+                "• `/setup_vscode` - VS Code\n"
+                "• `/setup_pycharm` - PyCharm\n"
+                "• `/setup_intellij` - IntelliJ IDEA\n"
+                "• `/setup_webstorm` - WebStorm\n"
+                "• `/setup_atom` - Atom\n"
+                "• `/setup_sublime` - Sublime Text\n"
+                "• `/setup_vim` - Vim/Neovim"
             ),
         )
         await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="setup_vscode", description="VS Code extension installation guide.")
+    @app_commands.command(name="setup_vscode", description="VS Code extension guide")
     async def setup_vscode(self, interaction: discord.Interaction):
         embed = discord.Embed(
             title="🟦 VS Code Setup Guide",
@@ -195,10 +233,10 @@ class CodeEditor(commands.Cog):
             name="Extension",
             value="Search `Discord Presence` by iCrawl in Extensions tab. Install and reload VS Code.",
             inline=False
-        ).set_thumbnail(url="https://code.visualstudio.com/assets/images/code-stable.png")
+        )
         await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="setup_pycharm", description="PyCharm plugin installation guide.")
+    @app_commands.command(name="setup_pycharm", description="PyCharm plugin guide")
     async def setup_pycharm(self, interaction: discord.Interaction):
         embed = discord.Embed(
             title="🐍 PyCharm Setup Guide",
@@ -211,25 +249,25 @@ class CodeEditor(commands.Cog):
         )
         await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="setup_intellij", description="IntelliJ IDEA plugin installation guide.")
+    @app_commands.command(name="setup_intellij", description="IntelliJ IDEA plugin guide")
     async def setup_intellij(self, interaction: discord.Interaction):
         embed = discord.Embed(
             title="💡 IntelliJ IDEA Setup Guide",
-            color=discord.Color.dark_gold(),
+            color=discord.Color.gold(),
             description="Install `Discord Integration` plugin from Marketplace."
         )
         await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="setup_webstorm", description="WebStorm plugin installation guide.")
+    @app_commands.command(name="setup_webstorm", description="WebStorm plugin guide")
     async def setup_webstorm(self, interaction: discord.Interaction):
         embed = discord.Embed(
             title="🌐 WebStorm Setup Guide",
-            color=discord.Color.brand_green(),
+            color=discord.Color.teal(),
             description="Install `Discord Integration` plugin for full support."
         )
         await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="setup_atom", description="Atom package installation guide.")
+    @app_commands.command(name="setup_atom", description="Atom package guide")
     async def setup_atom(self, interaction: discord.Interaction):
         embed = discord.Embed(
             title="🅰️ Atom Setup Guide",
@@ -238,7 +276,7 @@ class CodeEditor(commands.Cog):
         )
         await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="setup_sublime", description="Sublime Text plugin installation guide.")
+    @app_commands.command(name="setup_sublime", description="Sublime Text plugin guide")
     async def setup_sublime(self, interaction: discord.Interaction):
         embed = discord.Embed(
             title="📰 Sublime Text Setup Guide",
@@ -247,7 +285,7 @@ class CodeEditor(commands.Cog):
         )
         await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="setup_vim", description="Vim/Neovim plugin installation guide.")
+    @app_commands.command(name="setup_vim", description="Vim/Neovim plugin guide")
     async def setup_vim(self, interaction: discord.Interaction):
         embed = discord.Embed(
             title="🟩 Vim/Neovim Setup Guide",
@@ -256,9 +294,7 @@ class CodeEditor(commands.Cog):
         )
         await interaction.response.send_message(embed=embed)
 
-    # === Verification & Testing ===
-
-    @app_commands.command(name="setup_verify", description="Verify your complete setup (Discord + Editor).")
+    @app_commands.command(name="setup_verify", description="Verify your complete setup")
     async def setup_verify(self, interaction: discord.Interaction):
         embed = discord.Embed(
             title="🔎 Setup Verification",
@@ -267,7 +303,7 @@ class CodeEditor(commands.Cog):
         )
         await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="setup_test", description="Test Rich Presence connection.")
+    @app_commands.command(name="setup_test", description="Test Rich Presence connection")
     async def setup_test(self, interaction: discord.Interaction):
         embed = discord.Embed(
             title="🧪 Rich Presence Test",
@@ -276,7 +312,7 @@ class CodeEditor(commands.Cog):
         )
         await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="setup_troubleshoot", description="Common setup issues and solutions.")
+    @app_commands.command(name="setup_troubleshoot", description="Common setup issues")
     async def setup_troubleshoot(self, interaction: discord.Interaction):
         embed = discord.Embed(
             title="🛠️ Troubleshooting Setup",
@@ -290,23 +326,21 @@ class CodeEditor(commands.Cog):
         )
         await interaction.response.send_message(embed=embed)
 
-    # === Specialized ===
-
     @app_commands.command(name="setup_team", description="Setup guide for team leads")
     async def setup_team(self, interaction: discord.Interaction):
         embed = discord.Embed(
             title="🤝 Team Lead Setup Guide",
             color=discord.Color.gold(),
-            description="Have team members run `/setup editor` and `/setup verify`.\nCreate a #coding channel for leaderboard and stats."
+            description="Have team members run `/setup_editor` and `/setup_verify`.\nCreate a #coding channel for leaderboard and stats."
         )
         await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="setup_hackathon", description="Fast setup for hackathon participants")
+    @app_commands.command(name="setup_hackathon", description="Fast setup for hackathons")
     async def setup_hackathon(self, interaction: discord.Interaction):
         embed = discord.Embed(
             title="🏁 Hackathon Fast Setup",
             color=discord.Color.og_blurple(),
-            description="Install your editor plugin, enable Discord Rich Presence, verify with `/setup verify`."
+            description="Install your editor plugin, enable Discord Rich Presence, verify with `/setup_verify`."
         )
         await interaction.response.send_message(embed=embed)
 
