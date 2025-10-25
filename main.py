@@ -11,6 +11,7 @@ import asyncio
 import psycopg2
 from psycopg2 import pool
 from contextlib import contextmanager
+import time
 
 # Load environment variables
 load_dotenv()
@@ -80,7 +81,7 @@ def init_db_pool():
         connection_pool = psycopg2.pool.SimpleConnectionPool(
             1, 10,  # min and max connections
             db_url,
-            sslmode='require',  # Changed from default
+            sslmode='require',
             connect_timeout=10
         )
         
@@ -203,7 +204,6 @@ def get_guild_from_token(token):
         except Exception as e:
             logger.error(f"❌ PostgreSQL lookup failed (attempt {attempt + 1}/2): {e}")
             if attempt == 0:
-                import time
                 time.sleep(0.5)  # Brief pause before retry
                 continue
     
@@ -229,7 +229,6 @@ def load_tokens_from_db():
         except Exception as e:
             logger.error(f"❌ Failed to load tokens (attempt {attempt + 1}/{max_retries}): {e}")
             if attempt < max_retries - 1:
-                import time
                 time.sleep(1)
     
     logger.error("❌ Could not load tokens from database after all retries")
@@ -301,15 +300,49 @@ def github_webhook(token):
             logger.info(f"Current memory cache has {len(webhook_tokens_memory)} tokens")
             return jsonify({'error': 'Invalid webhook token'}), 403
         
-        # Get the guild
+        # Try multiple methods to get the guild
         guild = bot.get_guild(guild_id)
+        
+        # If guild not in cache, try fetching it
+        if not guild and bot.is_ready():
+            logger.warning(f"Guild {guild_id} not in cache, attempting to fetch...")
+            
+            # Method 1: Try to fetch guild
+            async def fetch_guild_async():
+                try:
+                    return await bot.fetch_guild(guild_id)
+                except discord.Forbidden:
+                    logger.error(f"No permission to fetch guild {guild_id}")
+                    return None
+                except discord.HTTPException as e:
+                    logger.error(f"HTTP error fetching guild: {e}")
+                    return None
+            
+            try:
+                future = asyncio.run_coroutine_threadsafe(fetch_guild_async(), bot.loop)
+                guild = future.result(timeout=5)
+            except Exception as e:
+                logger.error(f"Failed to fetch guild: {e}")
+        
+        # If still not found, check if bot is actually in the guild
         if not guild:
-            logger.error(f"Guild {guild_id} not found - bot may not be in server")
+            # List all guilds the bot is in for debugging
+            if bot.is_ready():
+                available_guilds = [f"{g.name} ({g.id})" for g in bot.guilds]
+                logger.error(f"Guild {guild_id} not found. Bot is in: {available_guilds}")
+            else:
+                logger.error(f"Guild {guild_id} not found and bot is not ready")
+            
             return jsonify({
                 'error': 'Guild not found',
-                'message': 'The bot is not in this Discord server. Please re-invite the bot or run !setupgit again.',
-                'guild_id': guild_id
+                'message': 'The bot cannot access this Discord server. Please check bot permissions and ensure it is invited.',
+                'guild_id': guild_id,
+                'bot_guilds': len(bot.guilds) if bot.is_ready() else 0,
+                'bot_ready': bot.is_ready(),
+                'suggestion': 'Try running !setupgit again in the Discord server or re-invite the bot with proper permissions.'
             }), 404
+        
+        logger.info(f"✅ Found guild: {guild.name} (ID: {guild.id})")
         
         # Handle ping event
         if event_type == 'ping':
@@ -317,19 +350,30 @@ def github_webhook(token):
             return jsonify({
                 'status': 'success',
                 'message': 'Webhook configured successfully!',
-                'guild': guild.name
+                'guild': guild.name,
+                'guild_id': guild.id
             }), 200
         
-        # Create async task
+        # Create async task to send notification
         async def send_github_notification():
-            git_channel = await find_git_channel(guild)
+            # Re-fetch guild in async context to ensure we have latest data
+            try:
+                fresh_guild = bot.get_guild(guild_id)
+                if not fresh_guild:
+                    fresh_guild = await bot.fetch_guild(guild_id)
+                    logger.info(f"Fetched fresh guild data: {fresh_guild.name}")
+            except Exception as e:
+                logger.error(f"Error fetching fresh guild: {e}")
+                fresh_guild = guild
+            
+            git_channel = await find_git_channel(fresh_guild)
             
             if not git_channel:
-                logger.warning(f"No 'git' channel in guild {guild.name}")
+                logger.warning(f"No 'git' channel in guild {fresh_guild.name}")
                 return False
             
-            if not git_channel.permissions_for(guild.me).send_messages:
-                logger.error(f"No permission in {git_channel.name}")
+            if not git_channel.permissions_for(fresh_guild.me).send_messages:
+                logger.error(f"No permission to send messages in {git_channel.name}")
                 return False
             
             commits = data.get('commits', [])
@@ -383,7 +427,7 @@ def github_webhook(token):
                     f"🔔 GitHub event (`{event_type}`) from **{repo_name}** by **{pusher}**"
                 )
             
-            logger.info(f"✅ Notification sent to {guild.name}")
+            logger.info(f"✅ Notification sent to {fresh_guild.name} #{git_channel.name}")
             return True
         
         if bot.is_ready():
@@ -391,25 +435,49 @@ def github_webhook(token):
             result = future.result(timeout=10)
             
             if result:
-                return jsonify({'status': 'success', 'guild': guild.name}), 200
+                return jsonify({
+                    'status': 'success',
+                    'guild': guild.name,
+                    'guild_id': guild.id
+                }), 200
             else:
-                return jsonify({'error': 'Failed to send notification'}), 500
+                return jsonify({
+                    'error': 'Failed to send notification',
+                    'details': 'Could not find git channel or missing permissions'
+                }), 500
         else:
-            return jsonify({'error': 'Bot not ready'}), 503
+            return jsonify({
+                'error': 'Bot not ready',
+                'message': 'The bot is still starting up. Please try again in a moment.'
+            }), 503
     
     except Exception as e:
         logger.error(f"GitHub webhook error: {e}", exc_info=True)
-        return jsonify({'error': str(e)}), 500
+        return jsonify({
+            'error': 'Internal server error',
+            'message': str(e)
+        }), 500
 
 @app.route('/health', methods=['GET'])
 def health_check():
     """Health check endpoint"""
     db_status = "connected" if connection_pool else "disconnected"
-    
-    # Check if tokens are loaded
     tokens_status = "loaded" if webhook_tokens_memory else "empty"
     
-    # Get guild info
+    valid_guild_ids = {guild.id for guild in bot.guilds} if bot.is_ready() else set()
+    
+    # Count valid vs invalid tokens
+    valid_tokens = 0
+    invalid_tokens = 0
+    invalid_guild_ids = []
+    
+    for token, guild_id in webhook_tokens_memory.items():
+        if guild_id in valid_guild_ids:
+            valid_tokens += 1
+        else:
+            invalid_tokens += 1
+            invalid_guild_ids.append(guild_id)
+    
     guild_info = []
     if bot.is_ready():
         for guild in bot.guilds:
@@ -419,16 +487,24 @@ def health_check():
                 'member_count': guild.member_count
             })
     
-    return jsonify({
+    response = {
         'status': 'ok',
         'bot_ready': bot.is_ready(),
         'bot_latency': round(bot.latency * 1000) if bot.is_ready() else None,
         'guilds': len(bot.guilds) if bot.is_ready() else 0,
         'guild_details': guild_info if bot.is_ready() else [],
         'registered_webhooks': len(webhook_tokens_memory),
+        'valid_webhooks': valid_tokens,
+        'invalid_webhooks': invalid_tokens,
         'tokens_status': tokens_status,
         'database': db_status
-    }), 200
+    }
+    
+    if invalid_tokens > 0:
+        response['warning'] = f'{invalid_tokens} tokens for missing guilds'
+        response['invalid_guild_ids'] = invalid_guild_ids
+    
+    return jsonify(response), 200
 
 @app.route('/', methods=['GET'])
 def home():
@@ -446,17 +522,35 @@ def home():
 @bot.event
 async def on_ready():
     print(f"✅ Logged in as {bot.user.name} (ID: {bot.user.id})")
-    print(f"Connected to {len(bot.guilds)} guild(s)")
+    print(f"Connected to {len(bot.guilds)} guild(s):")
+    
+    # Log all guilds with details
+    for guild in bot.guilds:
+        print(f"  - {guild.name} (ID: {guild.id}) | Members: {guild.member_count}")
+    
     print(f"🤖 Using OpenRouter with model: {DEFAULT_MODEL}")
     
     if not OPENROUTER_API_KEY:
         print("⚠️ WARNING: OPENROUTER_API_KEY not set!")
     
-    # Reload tokens to ensure we have latest (in case of bot restart)
+    # Reload tokens to ensure we have latest
     print("🔄 Refreshing token cache...")
     success = load_tokens_from_db()
     if success:
-        print(f"✅ {len(webhook_tokens_memory)} tokens in cache")
+        print(f"✅ {len(webhook_tokens_memory)} tokens loaded and ready")
+        
+        # Verify tokens against current guilds
+        valid_guild_ids = {guild.id for guild in bot.guilds}
+        invalid_count = 0
+        for token, guild_id in list(webhook_tokens_memory.items()):
+            if guild_id not in valid_guild_ids:
+                print(f"⚠️ WARNING: Token exists for guild {guild_id} but bot is not in that server")
+                invalid_count += 1
+        
+        if invalid_count > 0:
+            print(f"⚠️ Found {invalid_count} invalid tokens. Run !cleanuptokens to remove them.")
+    else:
+        print("⚠️ Using memory-only storage")
     
     await bot.change_presence(
         activity=discord.Activity(
@@ -551,7 +645,7 @@ async def setupgit(ctx):
     
     embed.add_field(
         name="📋 Webhook URL",
-        value=f"```{webhook_url}```",
+        value=f"``````",
         inline=False
     )
     
@@ -645,6 +739,125 @@ async def testgit(ctx):
     
     if permissions.send_messages:
         await git_channel.send(f"🧪 Test by {ctx.author.mention}")
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def checkguild(ctx):
+    """Debug command to check guild information"""
+    guild = ctx.guild
+    
+    embed = discord.Embed(
+        title="🔍 Guild Debug Information",
+        description=f"Guild: **{guild.name}**",
+        color=discord.Color.blue()
+    )
+    
+    # Basic info
+    embed.add_field(
+        name="📊 Basic Info",
+        value=(
+            f"**ID:** `{guild.id}`\n"
+            f"**Members:** {guild.member_count}\n"
+            f"**Bot Joined:** {guild.me.joined_at.strftime('%Y-%m-%d %H:%M')}"
+        ),
+        inline=False
+    )
+    
+    # Bot permissions
+    bot_perms = guild.me.guild_permissions
+    embed.add_field(
+        name="🔐 Bot Permissions",
+        value=(
+            f"{'✅' if bot_perms.administrator else '❌'} Administrator\n"
+            f"{'✅' if bot_perms.manage_channels else '❌'} Manage Channels\n"
+            f"{'✅' if bot_perms.send_messages else '❌'} Send Messages\n"
+            f"{'✅' if bot_perms.embed_links else '❌'} Embed Links\n"
+            f"{'✅' if bot_perms.manage_webhooks else '❌'} Manage Webhooks"
+        ),
+        inline=False
+    )
+    
+    # Git channel check
+    git_channel = await find_git_channel(guild)
+    if git_channel:
+        git_perms = git_channel.permissions_for(guild.me)
+        embed.add_field(
+            name="📂 Git Channel",
+            value=(
+                f"**Channel:** {git_channel.mention}\n"
+                f"{'✅' if git_perms.send_messages else '❌'} Can Send Messages\n"
+                f"{'✅' if git_perms.embed_links else '❌'} Can Embed Links"
+            ),
+            inline=False
+        )
+    else:
+        embed.add_field(
+            name="📂 Git Channel",
+            value="❌ No git channel found",
+            inline=False
+        )
+    
+    # Check if token exists for this guild
+    token_exists = any(gid == guild.id for gid in webhook_tokens_memory.values())
+    embed.add_field(
+        name="🔗 Webhook Status",
+        value=f"{'✅' if token_exists else '❌'} Webhook token {'exists' if token_exists else 'not found'}",
+        inline=False
+    )
+    
+    # Bot cache check
+    cached_guild = bot.get_guild(guild.id)
+    embed.add_field(
+        name="💾 Cache Status",
+        value=f"{'✅' if cached_guild else '❌'} Guild {'is' if cached_guild else 'NOT'} in bot cache",
+        inline=False
+    )
+    
+    embed.set_footer(text=f"Requested by {ctx.author}")
+    
+    await ctx.send(embed=embed)
+
+@bot.command()
+@commands.is_owner()
+async def cleanuptokens(ctx):
+    """Remove tokens for guilds bot is no longer in (Bot owner only)"""
+    valid_guild_ids = {guild.id for guild in bot.guilds}
+    removed_count = 0
+    
+    # Check memory cache
+    tokens_to_remove = []
+    for token, guild_id in list(webhook_tokens_memory.items()):
+        if guild_id not in valid_guild_ids:
+            tokens_to_remove.append((token, guild_id))
+    
+    # Remove from memory and database
+    for token, guild_id in tokens_to_remove:
+        webhook_tokens_memory.pop(token, None)
+        removed_count += 1
+        
+        # Remove from database
+        try:
+            with get_db_connection() as conn:
+                if conn:
+                    with conn.cursor() as cur:
+                        cur.execute("DELETE FROM webhook_tokens WHERE token = %s", (token,))
+                        conn.commit()
+        except Exception as e:
+            logger.error(f"Failed to remove token from DB: {e}")
+    
+    embed = discord.Embed(
+        title="🧹 Token Cleanup Complete",
+        description=f"Removed **{removed_count}** invalid tokens",
+        color=discord.Color.green()
+    )
+    
+    embed.add_field(
+        name="Current Status",
+        value=f"✅ Active guilds: {len(valid_guild_ids)}\n✅ Valid tokens: {len(webhook_tokens_memory)}",
+        inline=False
+    )
+    
+    await ctx.send(embed=embed)
 
 # ============= BASIC COMMANDS =============
 
