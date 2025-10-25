@@ -18,6 +18,9 @@ class Meetings(commands.Cog):
     def init_db_tables(self):
         try:
             with self.get_db_connection() as conn:
+                if not conn:
+                    await interaction.response.send_message("❌ Database unavailable", ephemeral=True)
+                    return
                 if conn:
                     with conn.cursor() as cur:
                         cur.execute("""
@@ -38,7 +41,8 @@ class Meetings(commands.Cog):
                             meeting_id TEXT NOT NULL,
                             user_id BIGINT NOT NULL,
                             rsvp TEXT CHECK (rsvp IN ('yes','no','maybe')),
-                            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            UNIQUE(meeting_id, user_id)
                         );
                         CREATE TABLE IF NOT EXISTS events (
                             id SERIAL PRIMARY KEY,
@@ -65,6 +69,9 @@ class Meetings(commands.Cog):
             creator_id = interaction.user.id
             channel_id = interaction.channel.id if hasattr(interaction, "channel") else None
             with self.get_db_connection() as conn:
+                if not conn:
+                    await interaction.response.send_message("❌ Database unavailable", ephemeral=True)
+                    return
                 if conn:
                     with conn.cursor() as cur:
                         cur.execute("""
@@ -87,6 +94,9 @@ class Meetings(commands.Cog):
         try:
             now = datetime.utcnow()
             with self.get_db_connection() as conn:
+                if not conn:
+                    await interaction.response.send_message("❌ Database unavailable", ephemeral=True)
+                    return
                 if conn:
                     with conn.cursor() as cur:
                         if filter == "past":
@@ -108,6 +118,9 @@ class Meetings(commands.Cog):
         try:
             user_id = interaction.user.id
             with self.get_db_connection() as conn:
+                if not conn:
+                    await interaction.response.send_message("❌ Database unavailable", ephemeral=True)
+                    return
                 if conn:
                     with conn.cursor() as cur:
                         # Upsert RSVP
@@ -128,6 +141,9 @@ class Meetings(commands.Cog):
             # Only creator can cancel
             user_id = interaction.user.id
             with self.get_db_connection() as conn:
+                if not conn:
+                    await interaction.response.send_message("❌ Database unavailable", ephemeral=True)
+                    return
                 if conn:
                     with conn.cursor() as cur:
                         cur.execute("SELECT creator_id FROM meetings WHERE meeting_id = %s", (meeting_id,))
@@ -152,6 +168,9 @@ class Meetings(commands.Cog):
     async def meeting_agenda(self, interaction: discord.Interaction, meeting_id: str, agenda_items: str):
         try:
             with self.get_db_connection() as conn:
+                if not conn:
+                    await interaction.response.send_message("❌ Database unavailable", ephemeral=True)
+                    return
                 if conn:
                     with conn.cursor() as cur:
                         cur.execute("UPDATE meetings SET agenda = %s WHERE meeting_id = %s", (agenda_items, meeting_id))
@@ -166,6 +185,9 @@ class Meetings(commands.Cog):
     async def meeting_notes(self, interaction: discord.Interaction, meeting_id: str, notes: str):
         try:
             with self.get_db_connection() as conn:
+                if not conn:
+                    await interaction.response.send_message("❌ Database unavailable", ephemeral=True)
+                    return
                 if conn:
                     with conn.cursor() as cur:
                         cur.execute("UPDATE meetings SET notes = %s WHERE meeting_id = %s", (notes, meeting_id))
@@ -183,6 +205,9 @@ class Meetings(commands.Cog):
             event_id = f"E{int(datetime.utcnow().timestamp())}"
             creator_id = interaction.user.id
             with self.get_db_connection() as conn:
+                if not conn:
+                    await interaction.response.send_message("❌ Database unavailable", ephemeral=True)
+                    return
                 if conn:
                     with conn.cursor() as cur:
                         cur.execute("""
@@ -203,6 +228,9 @@ class Meetings(commands.Cog):
         try:
             now = datetime.utcnow()
             with self.get_db_connection() as conn:
+                if not conn:
+                    await interaction.response.send_message("❌ Database unavailable", ephemeral=True)
+                    return
                 if conn:
                     with conn.cursor() as cur:
                         cur.execute("SELECT event_id, title, date FROM events WHERE date >= %s ORDER BY date ASC;", (now.date(),))
