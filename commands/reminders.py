@@ -4,16 +4,21 @@ from discord import app_commands
 from datetime import datetime, timedelta
 import asyncio
 import re
-import json
-import os
+import psycopg2
+from contextlib import contextmanager
+import logging
 from typing import Optional, Literal
+
+logger = logging.getLogger(__name__)
+
+# Assuming connection_pool is global from main.py
+from ..main import connection_pool, get_db_connection
 
 class Reminders(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.reminders = {}  # {reminder_id: reminder_data}
+        self.reminders = {}  # In-memory cache: {reminder_id: reminder_data}
         self.reminder_counter = 0
-        self.reminders_file = 'reminders_data.json'
         self.load_reminders()
         self.check_reminders.start()
 
@@ -22,45 +27,109 @@ class Reminders(commands.Cog):
         self.check_reminders.cancel()
         self.save_reminders()
 
-    def load_reminders(self):
-        """Load reminders from file"""
+    def init_db_table(self):
+        """Initialize the reminders table if it doesn't exist"""
         try:
-            if os.path.exists(self.reminders_file):
-                with open(self.reminders_file, 'r') as f:
-                    data = json.load(f)
-                    self.reminders = data.get('reminders', {})
-                    self.reminder_counter = data.get('counter', 0)
-                    
-                    # Convert string timestamps back to datetime
-                    for rid, reminder in self.reminders.items():
-                        reminder['trigger_time'] = datetime.fromisoformat(reminder['trigger_time'])
-                        if reminder.get('next_trigger'):
-                            reminder['next_trigger'] = datetime.fromisoformat(reminder['next_trigger'])
-                    
-                    print(f"✅ Loaded {len(self.reminders)} reminders from file")
+            with get_db_connection() as conn:
+                if conn:
+                    with conn.cursor() as cur:
+                        cur.execute("""
+                            CREATE TABLE IF NOT EXISTS reminders (
+                                id SERIAL PRIMARY KEY,
+                                reminder_id TEXT NOT NULL UNIQUE,
+                                user_id BIGINT NOT NULL,
+                                channel_id BIGINT NOT NULL,
+                                target_user_id BIGINT,
+                                message TEXT NOT NULL,
+                                trigger_time TIMESTAMP NOT NULL,
+                                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                                recurring BOOLEAN DEFAULT FALSE,
+                                frequency TEXT,
+                                next_trigger TIMESTAMP
+                            )
+                        """)
+                        conn.commit()
+                        logger.info("✅ Reminders table initialized")
         except Exception as e:
-            print(f"⚠️ Could not load reminders: {e}")
+            logger.error(f"❌ Failed to initialize reminders table: {e}")
 
-    def save_reminders(self):
-        """Save reminders to file"""
+    def load_reminders(self):
+        """Load reminders from PostgreSQL into memory"""
+        self.init_db_table()  # Ensure table exists
         try:
-            # Convert datetime objects to ISO format strings for JSON
-            save_data = {
-                'counter': self.reminder_counter,
-                'reminders': {}
-            }
-            
-            for rid, reminder in self.reminders.items():
-                reminder_copy = reminder.copy()
-                reminder_copy['trigger_time'] = reminder['trigger_time'].isoformat()
-                if reminder.get('next_trigger'):
-                    reminder_copy['next_trigger'] = reminder['next_trigger'].isoformat()
-                save_data['reminders'][rid] = reminder_copy
-            
-            with open(self.reminders_file, 'w') as f:
-                json.dump(save_data, f, indent=2)
+            with get_db_connection() as conn:
+                if conn:
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT * FROM reminders ORDER BY trigger_time ASC")
+                        rows = cur.fetchall()
+                        self.reminders = {}
+                        for row in rows:
+                            reminder_id = row[1]  # reminder_id
+                            self.reminders[reminder_id] = {
+                                'id': reminder_id,
+                                'user_id': row[2],
+                                'channel_id': row[3],
+                                'target_user_id': row[4],
+                                'message': row[5],
+                                'trigger_time': row[6],
+                                'created_at': row[7],
+                                'recurring': row[8],
+                                'frequency': row[9],
+                                'next_trigger': row[10]
+                            }
+                            # Update counter based on max ID
+                            counter = int(reminder_id[1:])  # e.g., 'R1' -> 1
+                            if counter > self.reminder_counter:
+                                self.reminder_counter = counter
+                        logger.info(f"✅ Loaded {len(self.reminders)} reminders from PostgreSQL")
         except Exception as e:
-            print(f"⚠️ Could not save reminders: {e}")
+            logger.error(f"⚠️ Could not load reminders: {e}")
+
+    def save_reminder(self, reminder_data):
+        """Save or update a single reminder to PostgreSQL"""
+        try:
+            with get_db_connection() as conn:
+                if conn:
+                    with conn.cursor() as cur:
+                        cur.execute("""
+                            INSERT INTO reminders 
+                            (reminder_id, user_id, channel_id, target_user_id, message, trigger_time, 
+                             recurring, frequency, next_trigger)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            ON CONFLICT (reminder_id) DO UPDATE SET
+                                user_id = EXCLUDED.user_id,
+                                channel_id = EXCLUDED.channel_id,
+                                target_user_id = EXCLUDED.target_user_id,
+                                message = EXCLUDED.message,
+                                trigger_time = EXCLUDED.trigger_time,
+                                recurring = EXCLUDED.recurring,
+                                frequency = EXCLUDED.frequency,
+                                next_trigger = EXCLUDED.next_trigger
+                        """, (
+                            reminder_data['id'],
+                            reminder_data['user_id'],
+                            reminder_data['channel_id'],
+                            reminder_data.get('target_user_id'),
+                            reminder_data['message'],
+                            reminder_data['trigger_time'],
+                            reminder_data.get('recurring', False),
+                            reminder_data.get('frequency'),
+                            reminder_data.get('next_trigger')
+                        ))
+                        conn.commit()
+        except Exception as e:
+            logger.error(f"⚠️ Could not save reminder {reminder_data['id']}: {e}")
+
+    def delete_reminder(self, reminder_id):
+        """Delete a reminder from PostgreSQL"""
+        try:
+            with get_db_connection() as conn:
+                if conn:
+                    with conn.cursor() as cur:
+                        cur.execute("DELETE FROM reminders WHERE reminder_id = %s", (reminder_id,))
+                        conn.commit()
+        except Exception as e:
+            logger.error(f"⚠️ Could not delete reminder {reminder_id}: {e}")
 
     def parse_time(self, time_str: str) -> Optional[datetime]:
         """Parse natural language time into datetime"""
@@ -165,130 +234,88 @@ class Reminders(commands.Cog):
                             title="⏰ Reminder",
                             description=reminder['message'],
                             color=discord.Color.blue(),
-                            timestamp=datetime.utcnow()
+                            timestamp=now
                         )
                         embed.set_footer(text=f"Reminder ID: {reminder_id}")
                         
                         if reminder.get('target_user_id'):
                             target_user = self.bot.get_user(reminder['target_user_id'])
                             if target_user:
-                                embed.add_field(name="For", value=target_user.mention)
+                                embed.add_field(name="For", value=target_user.mention, inline=False)
                         
-                        await channel.send(
-                            content=f"{user.mention if user else 'User'}'s reminder:",
-                            embed=embed
-                        )
+                        await channel.send(content=user.mention if user else "", embed=embed)
                         
-                        # Handle recurring reminders
                         if reminder.get('recurring'):
-                            next_time = self.get_next_recurring_time(
-                                reminder['frequency'],
-                                reminder['trigger_time']
-                            )
+                            next_time = self.get_next_recurring_time(reminder['frequency'], reminder['trigger_time'])
                             if next_time:
                                 reminder['trigger_time'] = next_time
-                                continue
-                        
-                        triggered.append(reminder_id)
-                        
+                                reminder['next_trigger'] = next_time
+                                self.save_reminder(reminder)
+                            else:
+                                triggered.append(reminder_id)
+                        else:
+                            triggered.append(reminder_id)
                 except Exception as e:
-                    print(f"Error triggering reminder {reminder_id}: {e}")
-                    triggered.append(reminder_id)
+                    logger.error(f"❌ Failed to send reminder {reminder_id}: {e}")
+                    triggered.append(reminder_id)  # Remove if failed
 
-        # Remove non-recurring triggered reminders
+        # Clean up triggered one-time reminders
         for rid in triggered:
-            if rid in self.reminders and not self.reminders[rid].get('recurring'):
-                del self.reminders[rid]
-        
-        if triggered:
-            self.save_reminders()
+            del self.reminders[rid]
+            self.delete_reminder(rid)
 
-    @check_reminders.before_loop
-    async def before_check_reminders(self):
-        """Wait until bot is ready before checking reminders"""
-        await self.bot.wait_until_ready()
-
-    @commands.hybrid_group(name="reminder", description="Manage reminders")
+    @commands.hybrid_group(name="reminder", description="Manage your reminders", invoke_without_command=True)
     async def reminder(self, ctx: commands.Context):
-        """Reminder management commands"""
-        if ctx.invoked_subcommand is None:
-            embed = discord.Embed(
-                title="⏰ Reminder Commands",
-                description="Manage your reminders",
-                color=discord.Color.blue()
-            )
-            embed.add_field(
-                name="Commands",
-                value=(
-                    "`/reminder set <time> <message>` - Set a reminder\n"
-                    "`/reminder list` - View active reminders\n"
-                    "`/reminder cancel <id>` - Cancel a reminder\n"
-                    "`/reminder recurring <frequency> <time> <message>` - Set recurring reminder"
-                ),
-                inline=False
-            )
-            embed.add_field(
-                name="Time Examples",
-                value=(
-                    "`in 30 minutes`, `in 2 hours`, `in 3 days`\n"
-                    "`tomorrow 9am`, `today 5pm`\n"
-                    "`14:30`, `3pm`"
-                ),
-                inline=False
-            )
-            await ctx.send(embed=embed)
+        """Reminder commands help"""
+        embed = discord.Embed(
+            title="⏰ Reminder Commands",
+            description=(
+                "**/reminder set <time> <message>** - One-time reminder\n"
+                "**/reminder recurring <frequency> <time> <message>** - Repeating reminder\n"
+                "**/reminder list** - Show your reminders\n"
+                "**/reminder cancel <id>** - Cancel a reminder\n"
+                "**/reminder clear** - Clear all your reminders"
+            ),
+            color=discord.Color.blue()
+        )
+        await ctx.send(embed=embed)
 
-    @reminder.command(name="set", description="Set a reminder")
+    @reminder.command(name="set", description="Set a one-time reminder")
     @app_commands.describe(
-        time="When to remind (e.g., 'in 2 hours', 'tomorrow 9am')",
-        message="Reminder message",
-        target="Optional: mention a user or channel to send reminder to"
+        time="When (e.g., 'in 30 minutes', '9am tomorrow', '14:30')",
+        message="What to remind you about"
     )
-    async def reminder_set(
-        self, 
-        ctx: commands.Context, 
-        time: str, 
-        *, 
-        message: str
-    ):
-        """Set a reminder"""
-        # Parse time
+    async def reminder_set(self, ctx: commands.Context, time: str, *, message: str):
+        """Set a one-time reminder"""
         trigger_time = self.parse_time(time)
         
         if not trigger_time:
-            await ctx.send("❌ Could not parse time. Try: `in 30 minutes`, `tomorrow 9am`, `today 5pm`", ephemeral=True)
+            await ctx.send("❌ Could not parse time. Try: `in 30 minutes`, `9am`, `14:30`", ephemeral=True)
             return
 
         if trigger_time < datetime.utcnow():
             await ctx.send("❌ Cannot set reminder in the past!", ephemeral=True)
             return
 
-        # Parse target (optional)
-        target_user_id = None
-        target_channel_id = ctx.channel.id
-        
-        # Check if message has mentions
-        if ctx.message.mentions:
-            target_user_id = ctx.message.mentions[0].id
-        
-        # Create reminder
         self.reminder_counter += 1
         reminder_id = f"R{self.reminder_counter}"
         
-        self.reminders[reminder_id] = {
+        reminder_data = {
             'id': reminder_id,
             'user_id': ctx.author.id,
-            'channel_id': target_channel_id,
-            'target_user_id': target_user_id,
+            'channel_id': ctx.channel.id,
+            'target_user_id': None,
             'message': message,
             'trigger_time': trigger_time,
-            'created_at': datetime.utcnow().isoformat(),
-            'recurring': False
+            'created_at': datetime.utcnow(),
+            'recurring': False,
+            'frequency': None,
+            'next_trigger': None
         }
         
-        self.save_reminders()
+        self.reminders[reminder_id] = reminder_data
+        self.save_reminder(reminder_data)
         
-        # Calculate time until reminder
         time_delta = trigger_time - datetime.utcnow()
         hours = int(time_delta.total_seconds() // 3600)
         minutes = int((time_delta.total_seconds() % 3600) // 60)
@@ -302,15 +329,11 @@ class Reminders(commands.Cog):
         embed.add_field(name="In", value=f"{hours}h {minutes}m" if hours > 0 else f"{minutes}m")
         embed.add_field(name="ID", value=reminder_id)
         
-        if target_user_id:
-            target_user = self.bot.get_user(target_user_id)
-            embed.add_field(name="For", value=target_user.mention if target_user else "Unknown user")
-        
         await ctx.send(embed=embed)
 
-    @reminder.command(name="list", description="View all active reminders")
+    @reminder.command(name="list", description="List your active reminders")
     async def reminder_list(self, ctx: commands.Context):
-        """List all active reminders for the user"""
+        """List active reminders for the user"""
         user_reminders = [
             r for r in self.reminders.values() 
             if r['user_id'] == ctx.author.id
@@ -367,7 +390,7 @@ class Reminders(commands.Cog):
         
         message = reminder['message']
         del self.reminders[reminder_id]
-        self.save_reminders()
+        self.delete_reminder(reminder_id)
         
         embed = discord.Embed(
             title="✅ Reminder Cancelled",
@@ -393,7 +416,6 @@ class Reminders(commands.Cog):
         message: str
     ):
         """Set a recurring reminder"""
-        # Parse time
         trigger_time = self.parse_time(time)
         
         if not trigger_time:
@@ -404,25 +426,25 @@ class Reminders(commands.Cog):
             await ctx.send("❌ Cannot set reminder in the past!", ephemeral=True)
             return
 
-        # Create reminder
         self.reminder_counter += 1
         reminder_id = f"R{self.reminder_counter}"
         
-        self.reminders[reminder_id] = {
+        reminder_data = {
             'id': reminder_id,
             'user_id': ctx.author.id,
             'channel_id': ctx.channel.id,
             'target_user_id': None,
             'message': message,
             'trigger_time': trigger_time,
-            'created_at': datetime.utcnow().isoformat(),
+            'created_at': datetime.utcnow(),
             'recurring': True,
-            'frequency': frequency
+            'frequency': frequency,
+            'next_trigger': trigger_time
         }
         
-        self.save_reminders()
+        self.reminders[reminder_id] = reminder_data
+        self.save_reminder(reminder_data)
         
-        # Calculate time until first reminder
         time_delta = trigger_time - datetime.utcnow()
         hours = int(time_delta.total_seconds() // 3600)
         minutes = int((time_delta.total_seconds() % 3600) // 60)
@@ -469,7 +491,7 @@ class Reminders(commands.Cog):
         if view.value:
             for rid in user_reminders:
                 del self.reminders[rid]
-            self.save_reminders()
+                self.delete_reminder(rid)
             
             await message.edit(
                 embed=discord.Embed(
@@ -488,7 +510,6 @@ class Reminders(commands.Cog):
                 ),
                 view=None
             )
-
 
 class ConfirmView(discord.ui.View):
     """Confirmation view for clearing reminders"""
@@ -512,7 +533,6 @@ class ConfirmView(discord.ui.View):
             return
         self.value = False
         self.stop()
-
 
 async def setup(bot):
     await bot.add_cog(Reminders(bot))
