@@ -79,7 +79,7 @@ def init_db_pool():
             1, 10,  # min and max connections
             db_url,
             sslmode='require',
-            connect_timeout=10
+            connect_timeout=30
         )
         
         logger.info("✅ PostgreSQL connection pool initialized")
@@ -384,7 +384,7 @@ def github_webhook(token):
                         webhook_url,
                         json={"embeds": [embed]},
                         headers={"Content-Type": "application/json"},
-                        timeout=10
+                        timeout=30
                     )
                     
                     if response.status_code == 204 or response.status_code == 200:
@@ -412,7 +412,7 @@ def github_webhook(token):
                         webhook_url,
                         json={"content": f"⚠️ **{total_commits - 50}** more commits not shown. View at {repo_url}"},
                         headers={"Content-Type": "application/json"},
-                        timeout=10
+                        timeout=30
                     )
                 except:
                     pass
@@ -423,7 +423,7 @@ def github_webhook(token):
                     webhook_url,
                     json={"content": f"🔔 GitHub event (`{event_type}`) from **{repo_name}** by **{pusher}**"},
                     headers={"Content-Type": "application/json"},
-                    timeout=10
+                    timeout=30
                 )
                 
                 if response.status_code not in [200, 204]:
@@ -1071,3 +1071,4 @@ start_bot()
 if __name__ == "__main__":
     print("🌐 Starting Flask...")
     app.run(host="0.0.0.0", port=port, debug=False)
+
