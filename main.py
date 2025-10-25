@@ -457,10 +457,6 @@ async def on_ready():
     print(f"✅ Logged in as {bot.user.name} (ID: {bot.user.id})")
     print(f"Connected to {len(bot.guilds)} guild(s):")
     
-    # Load moderation cog
-    await bot.load_extension("commands.moderation")
-    print("✅ Moderation commands loaded")
-    
     for guild in bot.guilds:
         print(f"  - {guild.name} (ID: {guild.id}) | Members: {guild.member_count}")
     
@@ -475,12 +471,23 @@ async def on_ready():
     else:
         print("⚠️ Using memory-only storage")
     
+    # Load moderation cog
+    try:
+        await bot.load_extension("commands.moderation")
+        print("✅ Moderation commands loaded")
+    except Exception as e:
+        print(f"⚠️ Moderation cog already loaded or error: {e}")
+    
     # Sync slash commands with Discord
+    print("🔄 Syncing slash commands with Discord...")
     try:
         synced = await bot.tree.sync()
-        print(f"✅ Synced {len(synced)} slash command(s)")
+        print(f"✅ Synced {len(synced)} slash command(s) globally")
+        print(f"📋 Commands: {[cmd.name for cmd in synced]}")
     except Exception as e:
         print(f"❌ Failed to sync commands: {e}")
+        import traceback
+        traceback.print_exc()
     
     await bot.change_presence(
         activity=discord.Activity(
