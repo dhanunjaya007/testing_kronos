@@ -1,3 +1,4 @@
+import secrets
 from flask import Flask, request, jsonify
 import threading
 import discord
@@ -44,33 +45,153 @@ DEFAULT_MODEL = "llama"
 # Store conversation history (optional enhancement)
 conversation_history = {}
 
+# Store webhook tokens mapped to guild IDs
+# Format: {token: guild_id}
+webhook_tokens = {}
+
 # Bot running flag
 bot_thread = None
 
-# ============= FLASK ROUTES =============
+# Deployment URL (set this to your actual deployment URL)
+DEPLOYMENT_URL = os.getenv('DEPLOYMENT_URL', 'https://testing-kronos.onrender.com')
 
-@app.route('/github', methods=['POST'])
-def github_webhook():
-    """Handle GitHub webhook for commit notifications"""
+# ============= GIT FUNCTIONS =============
+
+async def find_git_channel(guild):
+    """Find a channel named 'git' in the given guild"""
+    # Search for exact match first (case-insensitive)
+    for channel in guild.text_channels:
+        if channel.name.lower() == 'git':
+            return channel
+    
+    # Search for partial match
+    for channel in guild.text_channels:
+        if 'git' in channel.name.lower():
+            return channel
+    return None
+
+def generate_webhook_token(guild_id):
+    """Generate a unique webhook token for a guild"""
+    # Generate a secure random token
+    token = secrets.token_urlsafe(32)
+    webhook_tokens[token] = guild_id
+    return token
+
+def get_guild_from_token(token):
+    """Get guild ID from webhook token"""
+    return webhook_tokens.get(token)
+
+# ============= FLASK ROUTES =============
+@app.route('/github/<token>', methods=['POST'])
+def github_webhook(token):
+    """Handle GitHub webhook for commit notifications with dynamic routing"""
     try:
         data = request.json
         if not data:
             return jsonify({'error': 'No JSON data received'}), 400
         
-        author = data.get('head_commit', {}).get('author', {}).get('name')
-        message = data.get('head_commit', {}).get('message')
+        # Get guild ID from token
+        guild_id = get_guild_from_token(token)
+        if not guild_id:
+            logging.warning(f"Invalid webhook token used: {token}")
+            return jsonify({'error': 'Invalid webhook token'}), 403
         
-        if author and message and bot.is_ready():
-            channel = bot.get_channel(1430206059833720853)
-            if channel:
-                asyncio.run_coroutine_threadsafe(
-                    channel.send(f"🔔 New commit by **{author}**: {message}"),
-                    bot.loop
+        # Get the guild
+        guild = bot.get_guild(guild_id)
+        if not guild:
+            logging.error(f"Guild {guild_id} not found")
+            return jsonify({'error': 'Guild not found'}), 404
+        
+        # Create task to handle async operations
+        async def send_github_notification():
+            # Find git channel in the guild
+            git_channel = await find_git_channel(guild)
+            
+            if not git_channel:
+                logging.warning(f"No 'git' channel found in guild {guild.name}")
+                return False
+            
+            # Check bot permissions
+            if not git_channel.permissions_for(guild.me).send_messages:
+                logging.error(f"No permission to send messages in {git_channel.name}")
+                return False
+            
+            # Extract commit information
+            commits = data.get('commits', [])
+            repository = data.get('repository', {})
+            repo_name = repository.get('name', 'Unknown Repository')
+            repo_url = repository.get('html_url', '')
+            pusher = data.get('pusher', {}).get('name', 'Unknown')
+            ref = data.get('ref', '').split('/')[-1]  # Get branch name
+            
+            if commits:
+                # Split commits into batches of 5 and create embeds
+                embeds = []
+                total_commits = len(commits)
+                
+                for i in range(0, total_commits, 5):
+                    batch_start = i + 1
+                    batch_end = min(i + 5, total_commits)
+                    
+                    # Create embed for this batch
+                    embed = discord.Embed(
+                        title=f"🔔 New Push to {repo_name}",
+                        url=repo_url,
+                        color=discord.Color.blue(),
+                        description=f"**Commits {batch_start}-{batch_end}** of **{total_commits}** pushed to `{ref}` by **{pusher}**"
+                    )
+                    
+                    # Add commits to this embed
+                    for commit in commits[i:i+5]:
+                        author = commit.get('author', {}).get('name', 'Unknown')
+                        message = commit.get('message', 'No message')
+                        commit_url = commit.get('url', '')
+                        commit_id = commit.get('id', '')[:7]  # Short commit hash
+                        
+                        # Truncate long commit messages
+                        if len(message) > 100:
+                            message = message[:97] + "..."
+                        
+                        embed.add_field(
+                            name=f"`{commit_id}` - {author}",
+                            value=f"[{message}]({commit_url})",
+                            inline=False
+                        )
+                    
+                    embeds.append(embed)
+                
+                # Send all embeds (max 10 to avoid spam)
+                for embed in embeds[:10]:  # Limit to 10 embeds max
+                    await git_channel.send(embed=embed)
+                
+                # If there are more than 50 commits (10 embeds), notify about remaining
+                if total_commits > 50:
+                    await git_channel.send(
+                        f"⚠️ **{total_commits - 50}** more commits not shown. View full history at {repo_url}"
+                    )
+            else:
+                # Fallback for other GitHub events
+                event_type = request.headers.get('X-GitHub-Event', 'push')
+                await git_channel.send(
+                    f"🔔 GitHub event (`{event_type}`) received from **{repo_name}** by **{pusher}**"
                 )
+            
+            return True
         
-        return jsonify({'status': 'success'}), 200
+        # Schedule the coroutine in the bot's event loop
+        if bot.is_ready():
+            future = asyncio.run_coroutine_threadsafe(send_github_notification(), bot.loop)
+            result = future.result(timeout=10)  # Wait up to 10 seconds
+            
+            if result:
+                return jsonify({'status': 'success', 'guild': guild.name}), 200
+            else:
+                return jsonify({'error': 'Failed to send notification'}), 500
+        else:
+            return jsonify({'error': 'Bot not ready'}), 503
+    
     except Exception as e:
-        logging.error(f"GitHub webhook error: {e}")
+        logging.error(f"GitHub webhook error: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500
 
 @app.route('/health', methods=['GET'])
@@ -80,21 +201,22 @@ def health_check():
         'status': 'ok',
         'bot_ready': bot.is_ready(),
         'bot_latency': round(bot.latency * 1000) if bot.is_ready() else None,
-        'guilds': len(bot.guilds) if bot.is_ready() else 0
+        'guilds': len(bot.guilds) if bot.is_ready() else 0,
+        'registered_webhooks': len(webhook_tokens)
     }), 200
 
 @app.route('/', methods=['GET'])
 def home():
     """Basic home route"""
     return jsonify({
-        'bot': 'Discord Bot with AI',
+        'bot': 'Discord Bot with AI and GitHub Integration',
         'status': 'running',
         'bot_online': bot.is_ready(),
-        'endpoints': ['/health', '/github']
+        'endpoints': ['/health', '/github/<token>'],
+        'setup_guide': 'Use !setupgit command in your Discord server to get webhook URL'
     }), 200
 
 # ============= BOT EVENTS =============
-
 @bot.event
 async def on_ready():
     print(f"✅ Logged in as {bot.user.name} (ID: {bot.user.id})")
@@ -107,9 +229,46 @@ async def on_ready():
     await bot.change_presence(
         activity=discord.Activity(
             type=discord.ActivityType.listening,
-            name="!help | AI-powered"
+            name="!help | AI-powered with Github"
         )
     )
+
+@bot.event
+async def on_guild_join(guild):
+    """When bot joins a new server, check for git channel"""
+    print(f"🎉 Joined new guild: {guild.name} (ID: {guild.id})")
+    
+    git_channel = await find_git_channel(guild)
+    
+    # Send welcome message
+    if guild.system_channel and guild.system_channel.permissions_for(guild.me).send_messages:
+        embed = discord.Embed(
+            title="👋 Thanks for adding me!",
+            description=(
+                "I'm a multi-functional Discord bot with GitHub integration and AI chat!\n\n"
+                "**Quick Setup for GitHub:**\n"
+                "1. Create a channel named `git` if you don't have one\n"
+                "2. Use `!setupgit` to get your webhook URL\n"
+                "3. Add the webhook URL to your GitHub repository settings\n\n"
+                "**Commands:**\n"
+                "• `!help` - See all commands\n"
+                "• `!setupgit` - Get GitHub webhook URL\n"
+                "• `!chat <message>` - Chat with AI\n"
+                "• `!models` - See available AI models"
+            ),
+            color=discord.Color.green()
+        )
+        await guild.system_channel.send(embed=embed)
+    elif git_channel:
+        embed = discord.Embed(
+            title="👋 Hello!",
+            description=(
+                "Thanks for adding me! Use `!setupgit` here to get your GitHub webhook URL.\n"
+                "Type `!help` to see all available commands!"
+            ),
+            color=discord.Color.green()
+        )
+        await git_channel.send(embed=embed)
 
 @bot.event
 async def on_member_join(member):
@@ -153,6 +312,240 @@ async def on_message(message):
         await message.channel.send(f"{message.author.mention} I love you too! ❤️")
     
     await bot.process_commands(message)
+
+# ============= GITHUB INTEGRATION COMMANDS =============
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def setupgit(ctx):
+    """Set up GitHub webhook integration (Admin only)"""
+    guild = ctx.guild
+    
+    # Check if git channel exists
+    git_channel = await find_git_channel(guild)
+    
+    if not git_channel:
+        embed = discord.Embed(
+            title="❌ No 'git' Channel Found",
+            description=(
+                "Please create a text channel named `git` first!\n\n"
+                "**Steps:**\n"
+                "1. Create a new text channel\n"
+                "2. Name it exactly `git` (lowercase)\n"
+                "3. Run this command again"
+            ),
+            color=discord.Color.red()
+        )
+        await ctx.send(embed=embed)
+        return
+    
+    # Generate webhook token for this guild
+    token = generate_webhook_token(guild.id)
+    webhook_url = f"{DEPLOYMENT_URL}/github/{token}"
+    
+    # Create detailed setup embed
+    embed = discord.Embed(
+        title="✅ GitHub Webhook Setup",
+        description=f"GitHub commits will be posted in {git_channel.mention}",
+        color=discord.Color.green()
+    )
+    
+    embed.add_field(
+        name="📋 Your Webhook URL",
+        value=f"```{webhook_url}```",
+        inline=False
+    )
+    
+    embed.add_field(
+        name="🔧 Setup Instructions",
+        value=(
+            "1. Go to your GitHub repository\n"
+            "2. Click **Settings** → **Webhooks** → **Add webhook**\n"
+            "3. Paste the URL above in **Payload URL**\n"
+            "4. Set **Content type** to `application/json`\n"
+            "5. Select **Just the push event**\n"
+            "6. Click **Add webhook**"
+        ),
+        inline=False
+    )
+    
+    embed.add_field(
+        name="🔗 Quick Links",
+        value=(
+            "[GitHub Webhooks Guide](https://docs.github.com/en/webhooks)\n"
+            "[Video Tutorial](https://www.youtube.com/results?search_query=github+webhook+setup)"
+        ),
+        inline=False
+    )
+    
+    embed.set_footer(text="⚠️ Keep this URL private! Anyone with it can send messages to your git channel.")
+    
+    # Try to send via DM first for security
+    try:
+        await ctx.author.send(embed=embed)
+        await ctx.send("✅ Webhook URL sent to your DMs! Check your messages. 📬", delete_after=10)
+        
+        # Delete the command message for security
+        try:
+            await ctx.message.delete()
+        except:
+            pass
+    except discord.Forbidden:
+        # If DM fails, send in channel with warning
+        await ctx.send(
+            "⚠️ I couldn't DM you! Sending here instead. Please delete this message after copying the URL.",
+            embed=embed,
+            delete_after=60
+        )
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def creategit(ctx):
+    """Create a 'git' channel if it doesn't exist (Admin only)"""
+    guild = ctx.guild
+    
+    # Check if git channel already exists
+    git_channel = await find_git_channel(guild)
+    
+    if git_channel:
+        await ctx.send(f"ℹ️ A git channel already exists: {git_channel.mention}")
+        return
+    
+    # Create the channel
+    try:
+        new_channel = await guild.create_text_channel(
+            name='git',
+            topic='📦 GitHub commit notifications and repository updates',
+            reason=f'Created by {ctx.author} using !creategit command'
+        )
+        
+        embed = discord.Embed(
+            title="✅ Git Channel Created!",
+            description=f"Created {new_channel.mention} for GitHub notifications.",
+            color=discord.Color.green()
+        )
+        embed.add_field(
+            name="Next Steps",
+            value="Use `!setupgit` to get your webhook URL and connect your GitHub repository!",
+            inline=False
+        )
+        
+        await ctx.send(embed=embed)
+        
+        # Send welcome message in the new channel
+        welcome_embed = discord.Embed(
+            title="🎉 Welcome to the Git Channel!",
+            description=(
+                "This channel will receive GitHub commit notifications.\n\n"
+                "**Setup:**\n"
+                "Use `!setupgit` to get your webhook URL."
+            ),
+            color=discord.Color.blue()
+        )
+        await new_channel.send(embed=welcome_embed)
+        
+    except discord.Forbidden:
+        await ctx.send("❌ I don't have permission to create channels.")
+    except Exception as e:
+        await ctx.send(f"❌ Failed to create channel: {e}")
+
+@bot.command()
+async def githubhelp(ctx):
+    """Get help with GitHub integration"""
+    embed = discord.Embed(
+        title="📚 GitHub Integration Help",
+        description="Set up automatic commit notifications in your Discord server!",
+        color=discord.Color.blue()
+    )
+    
+    embed.add_field(
+        name="🚀 Quick Start",
+        value=(
+            "1. **Create Channel**: Use `!creategit` or manually create a channel named `git`\n"
+            "2. **Get Webhook**: Use `!setupgit` to get your unique webhook URL\n"
+            "3. **Add to GitHub**: Add the webhook URL in your repo settings\n"
+            "4. **Done!** Commits will appear in your git channel"
+        ),
+        inline=False
+    )
+    
+    embed.add_field(
+        name="📝 Commands",
+        value=(
+            "`!creategit` - Create a git channel (admin)\n"
+            "`!setupgit` - Get webhook URL (admin)\n"
+            "`!testgit` - Test git channel connection"
+        ),
+        inline=False
+    )
+    
+    embed.add_field(
+        name="❓ FAQ",
+        value=(
+            "**Q: Can I use a different channel name?**\n"
+            "A: Yes! Any channel with 'git' in the name works.\n\n"
+            "**Q: Can I connect multiple repositories?**\n"
+            "A: Yes! Use the same webhook URL for all your repos.\n\n"
+            "**Q: Is the webhook URL secure?**\n"
+            "A: Keep it private! Anyone with it can post to your channel."
+        ),
+        inline=False
+    )
+    
+    await ctx.send(embed=embed)
+
+@bot.command()
+async def testgit(ctx):
+    """Test if git channel is properly set up"""
+    guild = ctx.guild
+    git_channel = await find_git_channel(guild)
+    
+    if not git_channel:
+        embed = discord.Embed(
+            title="❌ No Git Channel Found",
+            description="Create a channel named `git` first using `!creategit`",
+            color=discord.Color.red()
+        )
+        await ctx.send(embed=embed)
+        return
+    
+    # Check permissions
+    permissions = git_channel.permissions_for(guild.me)
+    
+    embed = discord.Embed(
+        title="✅ Git Channel Test",
+        description=f"Found: {git_channel.mention}",
+        color=discord.Color.green()
+    )
+    
+    embed.add_field(
+        name="Permissions",
+        value=(
+            f"{'✅' if permissions.send_messages else '❌'} Send Messages\n"
+            f"{'✅' if permissions.embed_links else '❌'} Embed Links\n"
+            f"{'✅' if permissions.attach_files else '❌'} Attach Files"
+        ),
+        inline=False
+    )
+    
+    if not permissions.send_messages:
+        embed.add_field(
+            name="⚠️ Warning",
+            value="I don't have permission to send messages in the git channel!",
+            inline=False
+        )
+        embed.color = discord.Color.orange()
+    
+    await ctx.send(embed=embed)
+    
+    # Send test message to git channel
+    if permissions.send_messages:
+        test_embed = discord.Embed(
+            title="🧪 Test Message",
+            description=f"Test initiated by {ctx.author.mention}",
+            color=discord.Color.blue()
+        )
+        await git_channel.send(embed=test_embed)
 
 # ============= BASIC COMMANDS =============
 
@@ -653,6 +1046,7 @@ def start_bot():
     bot_thread = threading.Thread(target=run_bot, daemon=True)
     bot_thread.start()
     print("✅ Discord bot thread started")
+
 
 # ============= START BOT ON MODULE IMPORT =============
 
