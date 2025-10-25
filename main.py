@@ -257,25 +257,32 @@ def generate_webhook_token(guild_id):
 
 # ============= FLASK ROUTES =============
 
-@app.before_first_request
+# Global flag to track if tokens are loaded
+_tokens_loaded = False
+
 def ensure_tokens_loaded():
-    """Ensure tokens are loaded before handling any request"""
-    if not webhook_tokens_memory:
+    """Ensure tokens are loaded before handling requests"""
+    global _tokens_loaded
+    if not _tokens_loaded and not webhook_tokens_memory:
         logger.info("🔄 First request - ensuring tokens are loaded...")
         load_tokens_from_db()
         logger.info(f"✅ Ready with {len(webhook_tokens_memory)} tokens")
+        _tokens_loaded = True
 
 @app.route('/github/<token>', methods=['POST'])
 def github_webhook(token):
     """Handle GitHub webhook for commit notifications"""
     try:
+        # Ensure tokens are loaded
+        ensure_tokens_loaded()
+        
         # Log incoming request
         client_ip = request.headers.get('X-Forwarded-For', request.remote_addr)
         logger.info(f"Webhook request from {client_ip} with token: {token[:10]}...")
         
-        # Ensure tokens are loaded (lazy load if not already done)
+        # Check memory cache again after ensuring load
         if not webhook_tokens_memory:
-            logger.info("Memory cache empty, loading from database...")
+            logger.warning("Memory cache still empty after load attempt")
             load_tokens_from_db()
         
         data = request.json
