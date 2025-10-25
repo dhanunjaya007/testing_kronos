@@ -335,6 +335,13 @@ async def on_ready():
     except Exception as e:
         print(f"⚠️ Moderation cog error: {e}")
     
+    # Load code_editor cog
+    try:
+        await bot.load_extension("commands.code_editor")
+        print("✅ code_editor commands loaded")
+    except Exception as e:
+        print(f"⚠️ Moderation cog error: {e}")
+    
     # Load reminders cog
     try:
         await bot.load_extension("commands.reminders")
@@ -497,3 +504,4 @@ start_bot()
 if __name__ == "__main__":
     print("🌐 Starting Flask...")
     app.run(host="0.0.0.0", port=port, debug=False)
+
