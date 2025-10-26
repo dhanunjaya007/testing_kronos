@@ -642,7 +642,6 @@ async def on_ready():
         "commands.reminders",
         "commands.meeting",
         "commands.task_milestone",
-        "commands.standup",
         "commands.celebration",
         "commands.productivity",
         "commands.report",
@@ -768,3 +767,4 @@ if __name__ == "__main__":
     app.run(host="0.0.0.0", port=port, debug=False)
 else:
     start_bot()
+
