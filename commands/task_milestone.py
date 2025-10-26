@@ -12,6 +12,19 @@ class Tasks(commands.Cog):
         self.bot = bot
         self.get_db_connection = get_db_connection_func
         self.init_db_tables()
+    
+    def validate_db_connection(self):
+        """Validate database connection"""
+        try:
+            with self.get_db_connection() as conn:
+                if conn:
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT 1")
+                        return True
+                return False
+        except Exception as e:
+            logger.error(f"Database validation failed: {e}")
+            return False
 
     def init_db_tables(self):
         """Initialize task management tables"""
@@ -69,11 +82,35 @@ class Tasks(commands.Cog):
                         """)
                         
                         conn.commit()
-            logger.info("✅ Task/Milestone tables initialized")
+                    logger.info("✅ Task/Milestone tables initialized")
+                else:
+                    logger.warning("⚠️ Database connection not available - tables not initialized")
         except Exception as e:
             logger.error(f"❌ Failed to initialize task/milestone tables: {e}")
+            import traceback
+            traceback.print_exc()
 
     # ===== CORE TASK MANAGEMENT =====
+
+    @commands.hybrid_command(name="dbstatus", description="Check database connection status")
+    async def db_status(self, ctx: commands.Context):
+        """Check database connection status"""
+        try:
+            if self.validate_db_connection():
+                embed = discord.Embed(
+                    title="✅ Database Status",
+                    description="Database connection is working properly",
+                    color=discord.Color.green()
+                )
+            else:
+                embed = discord.Embed(
+                    title="❌ Database Status", 
+                    description="Database connection is not available",
+                    color=discord.Color.red()
+                )
+            await ctx.send(embed=embed, ephemeral=True)
+        except Exception as e:
+            await ctx.send(f"❌ Error checking database status: {e}", ephemeral=True)
 
     @commands.hybrid_group(name="task", description="Manage team tasks", invoke_without_command=True)
     async def task(self, ctx: commands.Context):
@@ -126,6 +163,9 @@ class Tasks(commands.Cog):
                         """, (task_id, title, description, assignee.id if assignee else None, 
                               ctx.author.id, deadline_date, priority))
                         conn.commit()
+                else:
+                    await ctx.send("❌ Database connection unavailable. Please try again later.", ephemeral=True)
+                    return
             
             embed = discord.Embed(
                 title="✅ Task Created",
@@ -178,6 +218,9 @@ class Tasks(commands.Cog):
                                 END
                             """)
                         rows = cur.fetchall()
+                else:
+                    await ctx.send("❌ Database connection unavailable. Please try again later.", ephemeral=True)
+                    return
             
             if not rows:
                 await ctx.send("📝 No tasks found.")
@@ -360,6 +403,9 @@ class Tasks(commands.Cog):
                             VALUES (%s, %s, %s, %s, %s, 'Pending')
                         """, (task_id, ctx.author.id, title, description, deadline_date))
                         conn.commit()
+                else:
+                    await ctx.send("❌ Database connection unavailable. Please try again later.", ephemeral=True)
+                    return
             
             embed = discord.Embed(
                 title="✅ Personal Task Created",
@@ -495,6 +541,9 @@ class Tasks(commands.Cog):
                             VALUES (%s, %s, %s, %s, 'Active', 0)
                         """, (milestone_id, title, description, deadline_date))
                         conn.commit()
+                else:
+                    await ctx.send("❌ Database connection unavailable. Please try again later.", ephemeral=True)
+                    return
             
             embed = discord.Embed(
                 title="🎯 Milestone Created",
@@ -599,9 +648,22 @@ class Tasks(commands.Cog):
 
 async def setup(bot: commands.Bot):
     """Setup function for the cog"""
-    get_db_connection_func = getattr(bot, "get_db_connection", None)
-    if not get_db_connection_func:
-        logger.error("❌ get_db_connection not found on bot instance")
-        return
-    await bot.add_cog(Tasks(bot, get_db_connection_func))
-    logger.info("✅ Tasks/Milestones cog loaded successfully")
+    try:
+        get_db_connection_func = getattr(bot, "get_db_connection", None)
+        if not get_db_connection_func:
+            logger.error("❌ get_db_connection not found on bot instance")
+            return
+        
+        # Create the cog instance
+        tasks_cog = Tasks(bot, get_db_connection_func)
+        
+        # Validate database connection
+        if not tasks_cog.validate_db_connection():
+            logger.warning("⚠️ Database connection validation failed - cog will work with limited functionality")
+        
+        await bot.add_cog(tasks_cog)
+        logger.info("✅ Tasks/Milestones cog loaded successfully")
+    except Exception as e:
+        logger.error(f"❌ Failed to setup Tasks/Milestones cog: {e}")
+        import traceback
+        traceback.print_exc()
