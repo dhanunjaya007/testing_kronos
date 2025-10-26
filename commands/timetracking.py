@@ -9,15 +9,17 @@ import re
 logger = logging.getLogger(__name__)
 
 class CountdownTimer(commands.Cog):
+    
     def __init__(self, bot, get_db_connection_func):
-        self.bot = bot
-        self.get_db_connection = get_db_connection_func
-        self.countdowns = {}
-        self.timers = {}
-        self.reminder_task = self.check_reminders.start()
+    self.bot = bot
+    self.get_db_connection = get_db_connection_func
+    self.countdowns = {}
+    self.timers = {}
+    self.check_reminders.start()  # FIXED
 
     def cog_unload(self):
-        self.reminder_task.cancel()
+    self.check_reminders.cancel()  # This stays the same
+
 
     async def check_reminders(self):
         while True:
