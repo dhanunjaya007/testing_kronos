@@ -33,9 +33,7 @@ intents.message_content = True
 intents.members = True
 intents.presences = True  # REQUIRED for code editor tracking!
 
-# Also move this line BEFORE loading cogs (around line 365):
-
-# Initialize bot with HYBRID commands (supports both / prefix and slash commands)
+# Initialize bot with HYBRID commands
 bot = commands.Bot(command_prefix='/', intents=intents)
 app = Flask(__name__)
 
@@ -54,26 +52,17 @@ FREE_MODELS = {
     "mistral": "mistralai/mistral-7b-instruct:free"
 }
 
-# Default model
 DEFAULT_MODEL = "llama"
-
-# Store conversation history
 conversation_history = {}
-
-# Store webhook information: token -> {'guild_id': id, 'webhook_url': url, 'webhook_id': id, 'webhook_token': token}
 webhook_data_memory = {}
-
-# Bot running flag
 bot_thread = None
-
-# Deployment URL
 DEPLOYMENT_URL = os.getenv('DEPLOYMENT_URL', 'https://testing-kronos.onrender.com')
 
 # ============= DATABASE CONNECTION POOL =============
 connection_pool = None
 
 def init_db_pool():
-    """Initialize PostgreSQL connection pool with proper SSL settings"""
+    """Initialize PostgreSQL connection pool"""
     global connection_pool
     if not DATABASE_URL:
         logger.warning("DATABASE_URL not set. Using in-memory storage only.")
@@ -82,19 +71,16 @@ def init_db_pool():
     max_retries = 3
     for attempt in range(max_retries):
         try:
-            # Parse DATABASE_URL and fix SSL settings
-            db_url = DATABASE_URL
-            # Render.com PostgreSQL requires SSL
             connection_pool = psycopg2.pool.SimpleConnectionPool(
-                1, 10,  # min and max connections
-                db_url,
+                1, 10,
+                DATABASE_URL,
                 sslmode='require',
                 connect_timeout=30
             )
             
             logger.info("✅ PostgreSQL connection pool initialized")
             
-            # Initialize database table with webhook URL storage
+            # Initialize webhook table
             with get_db_connection() as conn:
                 if conn:
                     with conn.cursor() as cur:
@@ -109,7 +95,7 @@ def init_db_pool():
                             )
                         """)
                         conn.commit()
-                        logger.info("✅ Database table initialized")
+                        logger.info("✅ Webhook table initialized")
             
             return connection_pool
         except Exception as e:
@@ -122,12 +108,11 @@ def init_db_pool():
 
 @contextmanager
 def get_db_connection():
-    """Context manager for database connections with retry logic"""
+    """Context manager for database connections"""
     conn = None
     try:
         if connection_pool:
             conn = connection_pool.getconn()
-            # Test connection before using
             with conn.cursor() as cur:
                 cur.execute("SELECT 1")
             yield conn
@@ -144,18 +129,6 @@ def get_db_connection():
                 connection_pool.putconn(conn, close=True)
             except:
                 pass
-        
-        # Try to reconnect once
-        try:
-            if connection_pool:
-                conn = connection_pool.getconn()
-                with conn.cursor() as cur:
-                    cur.execute("SELECT 1")
-                yield conn
-                return
-        except:
-            pass
-        
         yield None
     finally:
         if conn and connection_pool:
@@ -164,10 +137,9 @@ def get_db_connection():
             except:
                 pass
 
-# ============= TOKEN MANAGEMENT WITH DB =============
+# ============= TOKEN MANAGEMENT =============
 def save_webhook_data(token, guild_id, webhook_url, webhook_id, webhook_token):
-    """Save webhook data to both database and memory"""
-    # Always save to memory first
+    """Save webhook data"""
     webhook_data_memory[token] = {
         'guild_id': guild_id,
         'webhook_url': webhook_url,
@@ -175,7 +147,6 @@ def save_webhook_data(token, guild_id, webhook_url, webhook_id, webhook_token):
         'webhook_token': webhook_token
     }
     
-    # Try to save to database
     try:
         with get_db_connection() as conn:
             if conn:
@@ -189,339 +160,155 @@ def save_webhook_data(token, guild_id, webhook_url, webhook_id, webhook_token):
                          guild_id, webhook_url, webhook_id, webhook_token)
                     )
                     conn.commit()
-                    logger.info(f"✅ Saved webhook data for guild {guild_id} to PostgreSQL")
-            else:
-                logger.warning("Database unavailable, using memory storage only")
+                    logger.info(f"✅ Saved webhook data for guild {guild_id}")
     except Exception as e:
         logger.error(f"❌ PostgreSQL save failed: {e}")
-        logger.info("✅ Webhook data saved to memory as fallback")
 
 def get_webhook_data(token):
-    """Get webhook data from token (checks memory first, then DB)"""
-    # Check memory first (fastest and most reliable)
+    """Get webhook data from token"""
     if token in webhook_data_memory:
-        logger.info(f"✅ Token found in memory cache")
         return webhook_data_memory[token]
     
-    # Check database with retry
-    logger.info(f"Token not in cache, checking database...")
-    for attempt in range(2):  # Try twice
-        try:
-            with get_db_connection() as conn:
-                if conn:
-                    with conn.cursor() as cur:
-                        cur.execute(
-                            "SELECT guild_id, webhook_url, webhook_id, webhook_token FROM webhook_data WHERE token = %s", 
-                            (token,)
-                        )
-                        result = cur.fetchone()
-                        if result:
-                            data = {
-                                'guild_id': result[0],
-                                'webhook_url': result[1],
-                                'webhook_id': result[2],
-                                'webhook_token': result[3]
-                            }
-                            # Cache in memory for future requests
-                            webhook_data_memory[token] = data
-                            logger.info(f"✅ Token found in database, cached to memory")
-                            return data
-                        else:
-                            logger.warning(f"Token not found in database")
-                            return None
-                else:
-                    logger.warning(f"Database connection unavailable (attempt {attempt + 1}/2)")
-                    if attempt == 0:
-                        continue
-        except Exception as e:
-            logger.error(f"❌ PostgreSQL lookup failed (attempt {attempt + 1}/2): {e}")
-            if attempt == 0:
-                time.sleep(0.5)  # Brief pause before retry
-                continue
+    try:
+        with get_db_connection() as conn:
+            if conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT guild_id, webhook_url, webhook_id, webhook_token FROM webhook_data WHERE token = %s", 
+                        (token,)
+                    )
+                    result = cur.fetchone()
+                    if result:
+                        data = {
+                            'guild_id': result[0],
+                            'webhook_url': result[1],
+                            'webhook_id': result[2],
+                            'webhook_token': result[3]
+                        }
+                        webhook_data_memory[token] = data
+                        return data
+    except Exception as e:
+        logger.error(f"❌ PostgreSQL lookup failed: {e}")
     
-    logger.error(f"❌ Failed to retrieve token after all attempts")
     return None
 
 def load_webhook_data_from_db():
-    """Load all webhook data from database into memory on startup"""
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            with get_db_connection() as conn:
-                if conn:
-                    with conn.cursor() as cur:
-                        cur.execute("SELECT token, guild_id, webhook_url, webhook_id, webhook_token FROM webhook_data")
-                        results = cur.fetchall()
-                        for token, guild_id, webhook_url, webhook_id, webhook_token in results:
-                            webhook_data_memory[token] = {
-                                'guild_id': guild_id,
-                                'webhook_url': webhook_url,
-                                'webhook_id': webhook_id,
-                                'webhook_token': webhook_token
-                            }
-                        logger.info(f"✅ Loaded {len(results)} webhook entries from database to memory")
-                        return True
-                else:
-                    logger.warning(f"Database unavailable (attempt {attempt + 1}/{max_retries})")
-        except Exception as e:
-            logger.error(f"❌ Failed to load webhook data (attempt {attempt + 1}/{max_retries}): {e}")
-            if attempt < max_retries - 1:
-                time.sleep(1)
-    
-    logger.error("❌ Could not load webhook data from database after all retries")
+    """Load webhook data from database"""
+    try:
+        with get_db_connection() as conn:
+            if conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT token, guild_id, webhook_url, webhook_id, webhook_token FROM webhook_data")
+                    results = cur.fetchall()
+                    for token, guild_id, webhook_url, webhook_id, webhook_token in results:
+                        webhook_data_memory[token] = {
+                            'guild_id': guild_id,
+                            'webhook_url': webhook_url,
+                            'webhook_id': webhook_id,
+                            'webhook_token': webhook_token
+                        }
+                    logger.info(f"✅ Loaded {len(results)} webhook entries")
+                    return True
+    except Exception as e:
+        logger.error(f"❌ Failed to load webhook data: {e}")
     return False
 
-# FIXED: Register GitHub webhook routes with correct parameters
+# Register GitHub routes
 register_github_routes(app, bot, get_webhook_data, load_webhook_data_from_db, DEPLOYMENT_URL)
 
 @app.route('/health', methods=['GET'])
 def health_check():
     """Health check endpoint"""
-    db_status = "connected" if connection_pool else "disconnected"
-    webhooks_status = "loaded" if webhook_data_memory else "empty"
-    
-    valid_guild_ids = {guild.id for guild in bot.guilds} if bot.is_ready() else set()
-    valid_webhooks = sum(1 for data in webhook_data_memory.values() if data['guild_id'] in valid_guild_ids)
-    invalid_webhooks = len(webhook_data_memory) - valid_webhooks
-    
-    guild_info = [{'id': g.id, 'name': g.name, 'member_count': g.member_count} for g in bot.guilds] if bot.is_ready() else []
-    
     return jsonify({
         'status': 'ok',
         'bot_ready': bot.is_ready(),
-        'bot_latency': round(bot.latency * 1000) if bot.is_ready() else None,
         'guilds': len(bot.guilds) if bot.is_ready() else 0,
-        'guild_details': guild_info,
-        'registered_webhooks': len(webhook_data_memory),
-        'valid_webhooks': valid_webhooks,
-        'invalid_webhooks': invalid_webhooks,
-        'webhooks_status': webhooks_status,
-        'database': db_status
+        'webhooks': len(webhook_data_memory)
     }), 200
 
 @app.route('/', methods=['GET'])
 def home():
     """Home route"""
     return jsonify({
-        'bot': 'Discord Bot with AI and GitHub Integration',
+        'bot': 'Discord Bot',
         'status': 'running',
-        'bot_online': bot.is_ready(),
-        'endpoints': ['/health', '/github/<token>'],
-        'setup_guide': 'Use /setupgit slash command in Discord'
+        'bot_online': bot.is_ready()
     }), 200
 
 bot.get_db_connection = get_db_connection
+
 # ============= BOT EVENTS =============
 
 @bot.event
 async def on_ready():
-    print(f"✅ Logged in as {bot.user.name} (ID: {bot.user.id})")
-    print(f"Connected to {len(bot.guilds)} guild(s):")
+    print(f"✅ Logged in as {bot.user.name}")
+    print(f"Connected to {len(bot.guilds)} guilds")
     
-    for guild in bot.guilds:
-        print(f"  - {guild.name} (ID: {guild.id}) | Members: {guild.member_count}")
+    # Load webhook data
+    load_webhook_data_from_db()
     
-    print(f"🤖 Using OpenRouter with model: {DEFAULT_MODEL}")
-    if not OPENROUTER_API_KEY:
-        print("⚠️ WARNING: OPENROUTER_API_KEY not set!")
-    
-    print("🔄 Refreshing webhook cache...")
-    success = load_webhook_data_from_db()
-    if success:
-        print(f"✅ {len(webhook_data_memory)} webhook entries loaded and ready")
-    else:
-        print("⚠️ Using memory-only storage")
-    
-    # Setup custom commands BEFORE loading cogs
+    # Setup commands
     setup_git_commands(bot, save_webhook_data, DEPLOYMENT_URL)
     setup_ai_commands(bot, OPENROUTER_API_KEY, OPENROUTER_URL, FREE_MODELS, DEFAULT_MODEL)
     
-    # Load moderation cog
-    try:
-        await bot.load_extension("commands.moderation")
-        print("✅ Moderation commands loaded")
-    except Exception as e:
-        print(f"⚠️ Moderation cog error: {e}")
-        import traceback
-        traceback.print_exc()
+    # List of cogs to load
+    cogs = [
+        "commands.moderation",
+        "commands.code_editor",
+        "commands.reminders",
+        "commands.meeting",
+        "commands.task_milestone",
+        "commands.standup",
+        "commands.celebration",
+        "commands.productivity",
+        "commands.report",
+        "commands.timetracking",
+        "commands.progress_tracking",
+        "commands.gamification_XPsystem",
+        "commands.collaboration_notification"
+    ]
     
-    # Load code_editor cog
-    try:
-        await bot.load_extension("commands.code_editor")
-        print("✅ code_editor commands loaded")
-    except Exception as e:
-        print(f"⚠️ code_editor cog error: {e}")
-        import traceback
-        traceback.print_exc()
+    # Load each cog with error handling
+    for cog in cogs:
+        try:
+            await bot.load_extension(cog)
+            print(f"✅ Loaded {cog}")
+        except Exception as e:
+            print(f"⚠️ Failed to load {cog}: {e}")
+            import traceback
+            traceback.print_exc()
     
-    # Load reminders cog (with db connection function)
-    try:
-        await bot.load_extension("commands.reminders")
-        print("✅ Reminder commands loaded")
-    except Exception as e:
-        print(f"⚠️ Reminders cog error: {e}")
-        import traceback
-        traceback.print_exc()
-
-    try:
-        await bot.load_extension("commands.meeting")
-        print("Meeting commands loaded")
-    except Exception as e:
-        print(f"Meeting cog error: {e}")
-        import traceback; traceback.print_exc()
-    
-    # Load task_milestone cog
-    try:
-        await bot.load_extension("commands.task_milestone")
-        print("✅ Task/Milestone commands loaded")
-    except Exception as e:
-        print(f"⚠️ Task/Milestone cog error: {e}")
-        import traceback
-        traceback.print_exc()
-    
-    # Load standup/collaboration cog
-    try:
-        await bot.load_extension("commands.standup")
-        print("✅ Standup/Collaboration commands loaded")
-    except Exception as e:
-        print(f"⚠️ Standup/Collaboration cog error: {e}")
-        import traceback
-        traceback.print_exc()
-    
-    # Load celebration cog
-    try:
-        await bot.load_extension("commands.celebration")
-        print("✅ Celebration commands loaded")
-    except Exception as e:
-        print(f"⚠️ Celebration cog error: {e}")
-        import traceback
-        traceback.print_exc()
-    
-    # Load productivity cog
-    try:
-        await bot.load_extension("commands.productivity")
-        print("✅ Productivity commands loaded")
-    except Exception as e:
-        print(f"⚠️ Productivity cog error: {e}")
-        import traceback
-        traceback.print_exc()
-        
-    try:
-        await bot.load_extension("commands.report")
-        print("✅ report commands loaded")
-    except Exception as e:
-        print(f"⚠️ report cog error: {e}")
-        import traceback
-        traceback.print_exc()
-
-    try:
-        await bot.load_extension("commands.timetracking")
-        print("✅ timetracking commands loaded")
-    except Exception as e:
-        print(f"⚠️ timetracking cog error: {e}")
-        import traceback
-        traceback.print_exc()
-
-    try:
-        await bot.load_extension("commands.progress_tracking")
-        print("✅ progess_tracking commands loaded")
-    except Exception as e:
-        print(f"⚠️ progress_tracking cog error: {e}")
-        import traceback
-        traceback.print_exc()
-
-    try:
-        await bot.load_extension("commands.gamification_XPsystem")
-        print("✅ gamification_XPsystem commands loaded")
-    except Exception as e:
-        print(f"⚠️ gamification_XPsystem cog error: {e}")
-        import traceback
-        traceback.print_exc()
-
-    try:
-        await bot.load_extension("commands.collaboration_notification")
-        print("✅ collaboration_notification commands loaded")
-    except Exception as e:
-        print(f"⚠️ collabration_notification cog error: {e}")
-        import traceback
-        traceback.print_exc()
-    
-    # Sync slash commands with Discord
-    
-    # Sync slash commands with Discord
-    print("🔄 Syncing slash commands with Discord...")
+    # Sync commands
     try:
         synced = await bot.tree.sync()
-        print(f"✅ Synced {len(synced)} slash command(s) globally")
-        print(f"📋 Commands: {[cmd.name for cmd in synced]}")
+        print(f"✅ Synced {len(synced)} commands")
     except Exception as e:
         print(f"❌ Failed to sync commands: {e}")
-        import traceback
-        traceback.print_exc()
     
     await bot.change_presence(
         activity=discord.Activity(
             type=discord.ActivityType.listening,
-            name="/help | AI + GitHub + Reminders"
+            name="/help | AI + GitHub"
         )
     )
-@bot.event
-async def on_guild_join(guild):
-    """When bot joins a new server"""
-    print(f"🎉 Joined guild: {guild.name} (ID: {guild.id})")
-    
-    # Sync slash commands for this guild
-    try:
-        await bot.tree.sync(guild=guild)
-        print(f"✅ Synced slash commands for guild {guild.name}")
-    except Exception as e:
-        print(f"⚠️ Failed to sync commands for {guild.name}: {e}")
-    
-    if guild.system_channel and guild.system_channel.permissions_for(guild.me).send_messages:
-        embed = discord.Embed(
-            title="👋 Thanks for adding me!",
-            description=(
-                "**Quick Setup:**\n"
-                "1. Create a `git` channel\n"
-                "2. Use `/setupgit` for webhook URL\n"
-                "3. Add to GitHub repo settings\n\n"
-                "**Commands:** `/help`, `/chat`, `/reminder`, `/models`"
-            ),
-            color=discord.Color.green()
-        )
-        await guild.system_channel.send(embed=embed)
 
 @bot.event
-async def on_member_join(member):
-    """Welcome new members"""
+async def on_guild_join(guild):
+    """When bot joins a server"""
+    print(f"🎉 Joined guild: {guild.name}")
     try:
-        await member.send(f"👋 Welcome to **{member.guild.name}**!\nType `/help` for commands.")
-        if member.guild.system_channel:
-            await member.guild.system_channel.send(f"👋 Welcome {member.mention}!")
-    except discord.Forbidden:
-        pass
+        await bot.tree.sync(guild=guild)
+    except Exception as e:
+        print(f"⚠️ Failed to sync for {guild.name}: {e}")
 
 @bot.event
 async def on_message(message):
     """Handle messages"""
     if message.author == bot.user:
         return
-    
-    content_lower = message.content.lower()
-    
-    if "fuckyou" in content_lower.replace(" ", ""):
-        try:
-            await message.delete()
-            await message.channel.send(f"{message.author.mention} Please be friendly! 😊", delete_after=5)
-        except discord.Forbidden:
-            pass
-    
-    if "love you" in content_lower and not message.content.startswith('/'):
-        await message.channel.send(f"{message.author.mention} Love you too! ❤️")
-    
     await bot.process_commands(message)
 
-# ============= SLASH COMMANDS =============
+# ============= BASIC COMMANDS =============
 
 @bot.hybrid_command(name="hello", description="Say hello")
 async def hello(ctx: commands.Context):
@@ -574,12 +361,10 @@ def start_bot():
     # Initialize database
     init_db_pool()
     
-    # Pre-load webhook data into memory BEFORE starting bot
-    print("📦 Pre-loading webhook data from database...")
+    # Pre-load webhook data
+    print("📦 Pre-loading webhook data...")
     if load_webhook_data_from_db():
-        print(f"✅ {len(webhook_data_memory)} webhook entries loaded and ready")
-    else:
-        print("⚠️ Using memory-only storage")
+        print(f"✅ {len(webhook_data_memory)} webhooks loaded")
     
     def run_bot():
         try:
@@ -592,20 +377,10 @@ def start_bot():
     bot_thread.start()
     print("✅ Bot thread started")
 
-# Initialize database and start bot only when not running under Gunicorn
+# Start bot
 if __name__ == "__main__":
-    # Start bot only when running directly
     start_bot()
     print("🌐 Starting Flask...")
     app.run(host="0.0.0.0", port=port, debug=False)
 else:
-    # When running under Gunicorn, start bot using the existing function
     start_bot()
-
-
-
-
-
-
-
-
