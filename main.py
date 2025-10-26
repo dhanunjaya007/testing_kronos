@@ -1,957 +1,555 @@
-import secrets
-from flask import Flask, request, jsonify
-import threading
 import discord
+from discord.ext import commands, tasks
 from discord import app_commands
-from discord.ext import commands
+from datetime import datetime, timedelta, time
 import logging
-from dotenv import load_dotenv
-import os
-import requests
+from typing import Optional, Literal
 import asyncio
-import psycopg2
-from psycopg2 import pool
-from contextlib import contextmanager
-import time
 
-# Import custom modules
-from git_functions import setup_git_commands, register_github_routes
-from ai_functions import setup_ai_commands
-
-# Load environment variables
-load_dotenv()
-token = os.getenv('DISCORD_TOKEN')
-DATABASE_URL = os.getenv('DATABASE_URL')
-
-# Setup logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(name)s: %(message)s')
 logger = logging.getLogger(__name__)
-handler = logging.FileHandler(filename='discord.log', encoding='utf-8', mode='w')
 
-intents = discord.Intents.default()
-intents.message_content = True
-intents.members = True
+class Standup(commands.Cog):
+    def __init__(self, bot, get_db_connection_func):
+        self.bot = bot
+        self.get_db_connection = get_db_connection_func
+        self.standup_schedules = {}
+        self.pair_sessions = {}
+        self.sync_requests = {}
+        self.init_db_tables()
+        self.load_standup_schedules()
 
-# Initialize bot with HYBRID commands (supports both / prefix and slash commands)
-bot = commands.Bot(command_prefix='/', intents=intents)
-app = Flask(__name__)
-
-# Port configuration for deployment
-port = int(os.environ.get("PORT", 10000))
-
-# OpenRouter API Configuration
-OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY', '').strip()
-OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-
-# Available free models on OpenRouter
-FREE_MODELS = {
-    "llama": "meta-llama/llama-3.2-3b-instruct:free",
-    "deepseek": "deepseek/deepseek-r1-distill-llama-70b:free",
-    "gemini": "google/gemini-2.0-flash-exp:free",
-    "mistral": "mistralai/mistral-7b-instruct:free"
-}
-
-# Default model
-DEFAULT_MODEL = "llama"
-
-# Store conversation history
-conversation_history = {}
-
-# Store webhook information: token -> {'guild_id': id, 'webhook_url': url, 'webhook_id': id, 'webhook_token': token}
-webhook_data_memory = {}
-
-# Bot running flag
-bot_thread = None
-
-# Deployment URL
-DEPLOYMENT_URL = os.getenv('DEPLOYMENT_URL', 'https://testing-kronos.onrender.com')
-
-# ============= DATABASE CONNECTION POOL =============
-connection_pool = None
-
-def init_db_pool():
-    """Initialize PostgreSQL connection pool with proper SSL settings"""
-    global connection_pool
-    if not DATABASE_URL:
-        logger.warning("DATABASE_URL not set. Using in-memory storage only.")
-        return None
-    
-    max_retries = 3
-    for attempt in range(max_retries):
+    def init_db_tables(self):
+        """Initialize standup and collaboration tables"""
         try:
-            # Parse DATABASE_URL and fix SSL settings
-            db_url = DATABASE_URL
-            # Render.com PostgreSQL requires SSL
-            connection_pool = psycopg2.pool.SimpleConnectionPool(
-                1, 10,  # min and max connections
-                db_url,
-                sslmode='require',
-                connect_timeout=30
-            )
-            
-            logger.info("✅ PostgreSQL connection pool initialized")
-            
-            # Initialize database table with webhook URL storage
-            with get_db_connection() as conn:
+            with self.get_db_connection() as conn:
                 if conn:
                     with conn.cursor() as cur:
+                        # Standup schedules table
                         cur.execute("""
-                            CREATE TABLE IF NOT EXISTS webhook_data (
-                                token VARCHAR(255) PRIMARY KEY,
+                            CREATE TABLE IF NOT EXISTS standup_schedules (
+                                id SERIAL PRIMARY KEY,
                                 guild_id BIGINT NOT NULL,
-                                webhook_url TEXT NOT NULL,
-                                webhook_id BIGINT NOT NULL,
-                                webhook_token TEXT NOT NULL,
+                                channel_id BIGINT NOT NULL,
+                                standup_time TIME NOT NULL,
+                                timezone TEXT DEFAULT 'UTC',
+                                template TEXT DEFAULT 'What did you do yesterday? What will you do today? Any blockers?',
+                                active BOOLEAN DEFAULT TRUE,
                                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                             )
                         """)
-                        conn.commit()
-                        logger.info("✅ Database table initialized")
-            
-            return connection_pool
-        except Exception as e:
-            logger.error(f"❌ Failed to initialize database pool (attempt {attempt + 1}/{max_retries}): {e}")
-            if attempt < max_retries - 1:
-                time.sleep(2)
-            else:
-                logger.warning("⚠️ Falling back to in-memory storage")
-                return None
-
-@contextmanager
-def get_db_connection():
-    """Context manager for database connections with retry logic"""
-    conn = None
-    try:
-        if connection_pool:
-            conn = connection_pool.getconn()
-            # Test connection before using
-            with conn.cursor() as cur:
-                cur.execute("SELECT 1")
-            yield conn
-        else:
-            yield None
-    except Exception as e:
-        logger.error(f"Database connection error: {e}")
-        if conn:
-            try:
-                conn.rollback()
-            except:
-                pass
-            try:
-                connection_pool.putconn(conn, close=True)
-            except:
-                pass
-        
-        # Try to reconnect once
-        try:
-            if connection_pool:
-                conn = connection_pool.getconn()
-                with conn.cursor() as cur:
-                    cur.execute("SELECT 1")
-                yield conn
-                return
-        except:
-            pass
-        
-        yield None
-    finally:
-        if conn and connection_pool:
-            try:
-                connection_pool.putconn(conn)
-            except:
-                pass
-
-# ============= TOKEN MANAGEMENT WITH DB =============
-def save_webhook_data(token, guild_id, webhook_url, webhook_id, webhook_token):
-    """Save webhook data to both database and memory"""
-    # Always save to memory first
-    webhook_data_memory[token] = {
-        'guild_id': guild_id,
-        'webhook_url': webhook_url,
-        'webhook_id': webhook_id,
-        'webhook_token': webhook_token
-    }
-    
-    # Try to save to database
-    try:
-        with get_db_connection() as conn:
-            if conn:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        """INSERT INTO webhook_data (token, guild_id, webhook_url, webhook_id, webhook_token) 
-                           VALUES (%s, %s, %s, %s, %s) 
-                           ON CONFLICT (token) DO UPDATE 
-                           SET guild_id = %s, webhook_url = %s, webhook_id = %s, webhook_token = %s""",
-                        (token, guild_id, webhook_url, webhook_id, webhook_token,
-                         guild_id, webhook_url, webhook_id, webhook_token)
-                    )
-                    conn.commit()
-                    logger.info(f"✅ Saved webhook data for guild {guild_id} to PostgreSQL")
-            else:
-                logger.warning("Database unavailable, using memory storage only")
-    except Exception as e:
-        logger.error(f"❌ PostgreSQL save failed: {e}")
-        logger.info("✅ Webhook data saved to memory as fallback")
-
-def get_webhook_data(token):
-    """Get webhook data from token (checks memory first, then DB)"""
-    # Check memory first (fastest and most reliable)
-    if token in webhook_data_memory:
-        logger.info(f"✅ Token found in memory cache")
-        return webhook_data_memory[token]
-    
-    # Check database with retry
-    logger.info(f"Token not in cache, checking database...")
-    for attempt in range(2):  # Try twice
-        try:
-            with get_db_connection() as conn:
-                if conn:
-                    with conn.cursor() as cur:
-                        cur.execute(
-                            "SELECT guild_id, webhook_url, webhook_id, webhook_token FROM webhook_data WHERE token = %s", 
-                            (token,)
-                        )
-                        result = cur.fetchone()
-                        if result:
-                            data = {
-                                'guild_id': result[0],
-                                'webhook_url': result[1],
-                                'webhook_id': result[2],
-                                'webhook_token': result[3]
-                            }
-                            # Cache in memory for future requests
-                            webhook_data_memory[token] = data
-                            logger.info(f"✅ Token found in database, cached to memory")
-                            return data
-                        else:
-                            logger.warning(f"Token not found in database")
-                            return None
-                else:
-                    logger.warning(f"Database connection unavailable (attempt {attempt + 1}/2)")
-                    if attempt == 0:
-                        continue
-        except Exception as e:
-            logger.error(f"❌ PostgreSQL lookup failed (attempt {attempt + 1}/2): {e}")
-            if attempt == 0:
-                time.sleep(0.5)  # Brief pause before retry
-                continue
-    
-    logger.error(f"❌ Failed to retrieve token after all attempts")
-    return None
-
-def load_webhook_data_from_db():
-    """Load all webhook data from database into memory on startup"""
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            with get_db_connection() as conn:
-                if conn:
-                    with conn.cursor() as cur:
-                        cur.execute("SELECT token, guild_id, webhook_url, webhook_id, webhook_token FROM webhook_data")
-                        results = cur.fetchall()
-                        for token, guild_id, webhook_url, webhook_id, webhook_token in results:
-                            webhook_data_memory[token] = {
-                                'guild_id': guild_id,
-                                'webhook_url': webhook_url,
-                                'webhook_id': webhook_id,
-                                'webhook_token': webhook_token
-                            }
-                        logger.info(f"✅ Loaded {len(results)} webhook entries from database to memory")
-                        return True
-                else:
-                    logger.warning(f"Database unavailable (attempt {attempt + 1}/{max_retries})")
-        except Exception as e:
-            logger.error(f"❌ Failed to load webhook data (attempt {attempt + 1}/{max_retries}): {e}")
-            if attempt < max_retries - 1:
-                time.sleep(1)
-    
-    logger.error("❌ Could not load webhook data from database after all retries")
-    return False
-
-# FIXED: Register GitHub webhook routes with correct parameters
-register_github_routes(app, bot, get_webhook_data, load_webhook_data_from_db, DEPLOYMENT_URL)
-
-@app.route('/health', methods=['GET'])
-def health_check():
-    """Health check endpoint"""
-    db_status = "connected" if connection_pool else "disconnected"
-    webhooks_status = "loaded" if webhook_data_memory else "empty"
-    
-    valid_guild_ids = {guild.id for guild in bot.guilds} if bot.is_ready() else set()
-    valid_webhooks = sum(1 for data in webhook_data_memory.values() if data['guild_id'] in valid_guild_ids)
-    invalid_webhooks = len(webhook_data_memory) - valid_webhooks
-    
-    guild_info = [{'id': g.id, 'name': g.name, 'member_count': g.member_count} for g in bot.guilds] if bot.is_ready() else []
-    
-    return jsonify({
-        'status': 'ok',
-        'bot_ready': bot.is_ready(),
-        'bot_latency': round(bot.latency * 1000) if bot.is_ready() else None,
-        'guilds': len(bot.guilds) if bot.is_ready() else 0,
-        'guild_details': guild_info,
-        'registered_webhooks': len(webhook_data_memory),
-        'valid_webhooks': valid_webhooks,
-        'invalid_webhooks': invalid_webhooks,
-        'webhooks_status': webhooks_status,
-        'database': db_status
-    }), 200
-
-@app.route('/', methods=['GET'])
-def home():
-    """Home route"""
-    return jsonify({
-        'bot': 'Discord Bot with AI and GitHub Integration',
-        'status': 'running',
-        'bot_online': bot.is_ready(),
-        'endpoints': ['/health', '/github/<token>'],
-        'setup_guide': 'Use /setupgit slash command in Discord'
-    }), 200
-
-bot.get_db_connection = get_db_connection
-# ============= BOT EVENTS =============
-
-@bot.event
-async def on_ready():
-    print(f"✅ Logged in as {bot.user.name} (ID: {bot.user.id})")
-    print(f"Connected to {len(bot.guilds)} guild(s):")
-    
-    for guild in bot.guilds:
-        print(f"  - {guild.name} (ID: {guild.id}) | Members: {guild.member_count}")
-    
-    print(f"🤖 Using OpenRouter with model: {DEFAULT_MODEL}")
-    if not OPENROUTER_API_KEY:
-        print("⚠️ WARNING: OPENROUTER_API_KEY not set!")
-    
-    print("🔄 Refreshing webhook cache...")
-    success = load_webhook_data_from_db()
-    if success:
-        print(f"✅ {len(webhook_data_memory)} webhook entries loaded and ready")
-    else:
-        print("⚠️ Using memory-only storage")
-    
-    # Setup custom commands BEFORE loading cogs
-    setup_git_commands(bot, save_webhook_data, DEPLOYMENT_URL)
-    setup_ai_commands(bot, OPENROUTER_API_KEY, OPENROUTER_URL, FREE_MODELS, DEFAULT_MODEL)
-    
-    # Load moderation cog
-    try:
-        await bot.load_extension("commands.moderation")
-        print("✅ Moderation commands loaded")
-    except Exception as e:
-        print(f"⚠️ Moderation cog error: {e}")
-        import traceback
-        traceback.print_exc()
-    
-    # Load code_editor cog
-    try:
-        await bot.load_extension("commands.code_editor")
-        print("✅ code_editor commands loaded")
-    except Exception as e:
-        print(f"⚠️ code_editor cog error: {e}")
-        import traceback
-        traceback.print_exc()
-    
-    # Load reminders cog (with db connection function)
-    try:
-        await bot.load_extension("commands.reminders")
-        print("✅ Reminder commands loaded")
-    except Exception as e:
-        print(f"⚠️ Reminders cog error: {e}")
-        import traceback
-        traceback.print_exc()
-
-    try:
-        await bot.load_extension("commands.meeting")
-        print("Meeting commands loaded")
-    except Exception as e:
-        print(f"Meeting cog error: {e}")
-        import traceback; traceback.print_exc()
-    
-    # Load task_milestone cog
-    try:
-        await bot.load_extension("commands.task_milestone")
-        print("✅ Task/Milestone commands loaded")
-    except Exception as e:
-        print(f"⚠️ Task/Milestone cog error: {e}")
-        import traceback
-        traceback.print_exc()
-        # Load task_milestone cog
-    try:
-        await bot.load_extension("commands.task_milestone")
-        print("✅ Task/Milestone commands loaded")
-    except Exception as e:
-        print(f"⚠️ Task/Milestone cog error: {e}")
-        import traceback
-        traceback.print_exc()
-    
-    # Load standup/collaboration cog
-    try:
-        await bot.load_extension("commands.standup")
-        print("✅ Standup/Collaboration commands loaded")
-    except Exception as e:
-        print(f"⚠️ Standup/Collaboration cog error: {e}")
-        import traceback
-        traceback.print_exc()
-    
-    # Load celebration cog
-    try:
-        await bot.load_extension("commands.celebration")
-        print("✅ Celebration commands loaded")
-    except Exception as e:
-        print(f"⚠️ Celebration cog error: {e}")
-        import traceback
-        traceback.print_exc()
-    
-    # Load productivity cog
-    try:
-        await bot.load_extension("commands.productivity")
-        print("✅ Productivity commands loaded")
-    except Exception as e:
-        print(f"⚠️ Productivity cog error: {e}")
-        import traceback
-        traceback.print_exc()n.get("PORT", 10000)
-
-# OpenRouter API Configuration
-OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY', '').strip()
-OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-
-# Available free models on OpenRouter
-FREE_MODELS = {
-    "llama": "meta-llama/llama-3.2-3b-instruct:free",
-    "deepseek": "deepseek/deepseek-r1-distill-llama-70b:free",
-    "gemini": "google/gemini-2.0-flash-exp:free",
-    "mistral": "mistralai/mistral-7b-instruct:free"
-}
-
-# Default model
-DEFAULT_MODEL = "llama"
-
-# Store conversation history
-conversation_history = {}
-
-# Store webhook information: token -> {'guild_id': id, 'webhook_url': url, 'webhook_id': id, 'webhook_token': token}
-webhook_data_memory = {}
-
-# Bot running flag
-bot_thread = None
-
-# Deployment URL
-DEPLOYMENT_URL = os.getenv('DEPLOYMENT_URL', 'https://testing-kronos.onrender.com')
-
-# ============= DATABASE CONNECTION POOL =============
-connection_pool = None
-
-def init_db_pool():
-    """Initialize PostgreSQL connection pool with proper SSL settings"""
-    global connection_pool
-    if not DATABASE_URL:
-        logger.warning("DATABASE_URL not set. Using in-memory storage only.")
-        return None
-    
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            # Parse DATABASE_URL and fix SSL settings
-            db_url = DATABASE_URL
-            # Render.com PostgreSQL requires SSL
-            connection_pool = psycopg2.pool.SimpleConnectionPool(
-                1, 10,  # min and max connections
-                db_url,
-                sslmode='require',
-                connect_timeout=30
-            )
-            
-            logger.info("✅ PostgreSQL connection pool initialized")
-            
-            # Initialize database table with webhook URL storage
-            with get_db_connection() as conn:
-                if conn:
-                    with conn.cursor() as cur:
+                        
+                        # Standup posts table
                         cur.execute("""
-                            CREATE TABLE IF NOT EXISTS webhook_data (
-                                token VARCHAR(255) PRIMARY KEY,
+                            CREATE TABLE IF NOT EXISTS standup_posts (
+                                id SERIAL PRIMARY KEY,
+                                user_id BIGINT NOT NULL,
                                 guild_id BIGINT NOT NULL,
-                                webhook_url TEXT NOT NULL,
-                                webhook_id BIGINT NOT NULL,
-                                webhook_token TEXT NOT NULL,
+                                channel_id BIGINT NOT NULL,
+                                post_date DATE NOT NULL,
+                                content TEXT NOT NULL,
+                                skipped BOOLEAN DEFAULT FALSE,
+                                skip_reason TEXT,
+                                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                                UNIQUE(user_id, guild_id, post_date)
+                            )
+                        """)
+                        
+                        # Pair programming sessions table
+                        cur.execute("""
+                            CREATE TABLE IF NOT EXISTS pair_sessions (
+                                id SERIAL PRIMARY KEY,
+                                session_id TEXT NOT NULL UNIQUE,
+                                user1_id BIGINT NOT NULL,
+                                user2_id BIGINT NOT NULL,
+                                guild_id BIGINT NOT NULL,
+                                channel_id BIGINT NOT NULL,
+                                start_time TIMESTAMP NOT NULL,
+                                end_time TIMESTAMP,
+                                duration_minutes INT,
+                                topic TEXT,
                                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                             )
                         """)
+                        
+                        # Sync requests table
+                        cur.execute("""
+                            CREATE TABLE IF NOT EXISTS sync_requests (
+                                id SERIAL PRIMARY KEY,
+                                request_id TEXT NOT NULL UNIQUE,
+                                requester_id BIGINT NOT NULL,
+                                target_id BIGINT NOT NULL,
+                                guild_id BIGINT NOT NULL,
+                                channel_id BIGINT NOT NULL,
+                                message TEXT,
+                                status TEXT CHECK (status IN ('pending', 'accepted', 'declined', 'completed')) DEFAULT 'pending',
+                                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                                responded_at TIMESTAMP
+                            )
+                        """)
+                        
                         conn.commit()
-                        logger.info("✅ Database table initialized")
-            
-            return connection_pool
+                    logger.info("✅ Standup/Collaboration tables initialized")
+                else:
+                    logger.warning("⚠️ Database connection not available - tables not initialized")
         except Exception as e:
-            logger.error(f"❌ Failed to initialize database pool (attempt {attempt + 1}/{max_retries}): {e}")
-            if attempt < max_retries - 1:
-                time.sleep(2)
-            else:
-                logger.warning("⚠️ Falling back to in-memory storage")
-                return None
+            logger.error(f"❌ Failed to initialize standup/collaboration tables: {e}")
+            import traceback
+            traceback.print_exc()
 
-@contextmanager
-def get_db_connection():
-    """Context manager for database connections with retry logic"""
-    conn = None
-    try:
-        if connection_pool:
-            conn = connection_pool.getconn()
-            # Test connection before using
-            with conn.cursor() as cur:
-                cur.execute("SELECT 1")
-            yield conn
-        else:
-            yield None
-    except Exception as e:
-        logger.error(f"Database connection error: {e}")
-        if conn:
-            try:
-                conn.rollback()
-            except:
-                pass
-            try:
-                connection_pool.putconn(conn, close=True)
-            except:
-                pass
-        
-        # Try to reconnect once
+    def load_standup_schedules(self):
+        """Load standup schedules from database"""
         try:
-            if connection_pool:
-                conn = connection_pool.getconn()
-                with conn.cursor() as cur:
-                    cur.execute("SELECT 1")
-                yield conn
-                return
-        except:
-            pass
-        
-        yield None
-    finally:
-        if conn and connection_pool:
-            try:
-                connection_pool.putconn(conn)
-            except:
-                pass
-
-# ============= TOKEN MANAGEMENT WITH DB =============
-def save_webhook_data(token, guild_id, webhook_url, webhook_id, webhook_token):
-    """Save webhook data to both database and memory"""
-    # Always save to memory first
-    webhook_data_memory[token] = {
-        'guild_id': guild_id,
-        'webhook_url': webhook_url,
-        'webhook_id': webhook_id,
-        'webhook_token': webhook_token
-    }
-    
-    # Try to save to database
-    try:
-        with get_db_connection() as conn:
-            if conn:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        """INSERT INTO webhook_data (token, guild_id, webhook_url, webhook_id, webhook_token) 
-                           VALUES (%s, %s, %s, %s, %s) 
-                           ON CONFLICT (token) DO UPDATE 
-                           SET guild_id = %s, webhook_url = %s, webhook_id = %s, webhook_token = %s""",
-                        (token, guild_id, webhook_url, webhook_id, webhook_token,
-                         guild_id, webhook_url, webhook_id, webhook_token)
-                    )
-                    conn.commit()
-                    logger.info(f"✅ Saved webhook data for guild {guild_id} to PostgreSQL")
-            else:
-                logger.warning("Database unavailable, using memory storage only")
-    except Exception as e:
-        logger.error(f"❌ PostgreSQL save failed: {e}")
-        logger.info("✅ Webhook data saved to memory as fallback")
-
-def get_webhook_data(token):
-    """Get webhook data from token (checks memory first, then DB)"""
-    # Check memory first (fastest and most reliable)
-    if token in webhook_data_memory:
-        logger.info(f"✅ Token found in memory cache")
-        return webhook_data_memory[token]
-    
-    # Check database with retry
-    logger.info(f"Token not in cache, checking database...")
-    for attempt in range(2):  # Try twice
-        try:
-            with get_db_connection() as conn:
+            with self.get_db_connection() as conn:
                 if conn:
                     with conn.cursor() as cur:
-                        cur.execute(
-                            "SELECT guild_id, webhook_url, webhook_id, webhook_token FROM webhook_data WHERE token = %s", 
-                            (token,)
-                        )
-                        result = cur.fetchone()
-                        if result:
-                            data = {
-                                'guild_id': result[0],
-                                'webhook_url': result[1],
-                                'webhook_id': result[2],
-                                'webhook_token': result[3]
+                        cur.execute("""
+                            SELECT guild_id, channel_id, standup_time, timezone, template, active
+                            FROM standup_schedules WHERE active = TRUE
+                        """)
+                        rows = cur.fetchall()
+                        
+                        for guild_id, channel_id, standup_time, timezone, template, active in rows:
+                            self.standup_schedules[guild_id] = {
+                                'channel_id': channel_id,
+                                'time': standup_time,
+                                'timezone': timezone,
+                                'template': template,
+                                'active': active
                             }
-                            # Cache in memory for future requests
-                            webhook_data_memory[token] = data
-                            logger.info(f"✅ Token found in database, cached to memory")
-                            return data
-                        else:
-                            logger.warning(f"Token not found in database")
-                            return None
-                else:
-                    logger.warning(f"Database connection unavailable (attempt {attempt + 1}/2)")
-                    if attempt == 0:
-                        continue
+                        logger.info(f"✅ Loaded {len(rows)} standup schedules")
         except Exception as e:
-            logger.error(f"❌ PostgreSQL lookup failed (attempt {attempt + 1}/2): {e}")
-            if attempt == 0:
-                time.sleep(0.5)  # Brief pause before retry
-                continue
-    
-    logger.error(f"❌ Failed to retrieve token after all attempts")
-    return None
+            logger.error(f"❌ Failed to load standup schedules: {e}")
 
-def load_webhook_data_from_db():
-    """Load all webhook data from database into memory on startup"""
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            with get_db_connection() as conn:
-                if conn:
-                    with conn.cursor() as cur:
-                        cur.execute("SELECT token, guild_id, webhook_url, webhook_id, webhook_token FROM webhook_data")
-                        results = cur.fetchall()
-                        for token, guild_id, webhook_url, webhook_id, webhook_token in results:
-                            webhook_data_memory[token] = {
-                                'guild_id': guild_id,
-                                'webhook_url': webhook_url,
-                                'webhook_id': webhook_id,
-                                'webhook_token': webhook_token
-                            }
-                        logger.info(f"✅ Loaded {len(results)} webhook entries from database to memory")
-                        return True
-                else:
-                    logger.warning(f"Database unavailable (attempt {attempt + 1}/{max_retries})")
-        except Exception as e:
-            logger.error(f"❌ Failed to load webhook data (attempt {attempt + 1}/{max_retries}): {e}")
-            if attempt < max_retries - 1:
-                time.sleep(1)
-    
-    logger.error("❌ Could not load webhook data from database after all retries")
-    return False
+    # ===== STANDUP COMMANDS =====
 
-# FIXED: Register GitHub webhook routes with correct parameters
-register_github_routes(app, bot, get_webhook_data, load_webhook_data_from_db, DEPLOYMENT_URL)
-
-@app.route('/health', methods=['GET'])
-def health_check():
-    """Health check endpoint"""
-    db_status = "connected" if connection_pool else "disconnected"
-    webhooks_status = "loaded" if webhook_data_memory else "empty"
-    
-    valid_guild_ids = {guild.id for guild in bot.guilds} if bot.is_ready() else set()
-    valid_webhooks = sum(1 for data in webhook_data_memory.values() if data['guild_id'] in valid_guild_ids)
-    invalid_webhooks = len(webhook_data_memory) - valid_webhooks
-    
-    guild_info = [{'id': g.id, 'name': g.name, 'member_count': g.member_count} for g in bot.guilds] if bot.is_ready() else []
-    
-    return jsonify({
-        'status': 'ok',
-        'bot_ready': bot.is_ready(),
-        'bot_latency': round(bot.latency * 1000) if bot.is_ready() else None,
-        'guilds': len(bot.guilds) if bot.is_ready() else 0,
-        'guild_details': guild_info,
-        'registered_webhooks': len(webhook_data_memory),
-        'valid_webhooks': valid_webhooks,
-        'invalid_webhooks': invalid_webhooks,
-        'webhooks_status': webhooks_status,
-        'database': db_status
-    }), 200
-
-@app.route('/', methods=['GET'])
-def home():
-    """Home route"""
-    return jsonify({
-        'bot': 'Discord Bot with AI and GitHub Integration',
-        'status': 'running',
-        'bot_online': bot.is_ready(),
-        'endpoints': ['/health', '/github/<token>'],
-        'setup_guide': 'Use /setupgit slash command in Discord'
-    }), 200
-
-bot.get_db_connection = get_db_connection
-# ============= BOT EVENTS =============
-
-@bot.event
-async def on_ready():
-    print(f"✅ Logged in as {bot.user.name} (ID: {bot.user.id})")
-    print(f"Connected to {len(bot.guilds)} guild(s):")
-    
-    for guild in bot.guilds:
-        print(f"  - {guild.name} (ID: {guild.id}) | Members: {guild.member_count}")
-    
-    print(f"🤖 Using OpenRouter with model: {DEFAULT_MODEL}")
-    if not OPENROUTER_API_KEY:
-        print("⚠️ WARNING: OPENROUTER_API_KEY not set!")
-    
-    print("🔄 Refreshing webhook cache...")
-    success = load_webhook_data_from_db()
-    if success:
-        print(f"✅ {len(webhook_data_memory)} webhook entries loaded and ready")
-    else:
-        print("⚠️ Using memory-only storage")
-    
-    # Setup custom commands BEFORE loading cogs
-    setup_git_commands(bot, save_webhook_data, DEPLOYMENT_URL)
-    setup_ai_commands(bot, OPENROUTER_API_KEY, OPENROUTER_URL, FREE_MODELS, DEFAULT_MODEL)
-    
-    # Load moderation cog
-    try:
-        await bot.load_extension("commands.moderation")
-        print("✅ Moderation commands loaded")
-    except Exception as e:
-        print(f"⚠️ Moderation cog error: {e}")
-        import traceback
-        traceback.print_exc()
-    
-    # Load code_editor cog
-    try:
-        await bot.load_extension("commands.code_editor")
-        print("✅ code_editor commands loaded")
-    except Exception as e:
-        print(f"⚠️ code_editor cog error: {e}")
-        import traceback
-        traceback.print_exc()
-    
-    # Load reminders cog (with db connection function)
-    try:
-        await bot.load_extension("commands.reminders")
-        print("✅ Reminder commands loaded")
-    except Exception as e:
-        print(f"⚠️ Reminders cog error: {e}")
-        import traceback
-        traceback.print_exc()
-
-    try:
-        await bot.load_extension("commands.meeting")
-        print("Meeting commands loaded")
-    except Exception as e:
-        print(f"Meeting cog error: {e}")
-        import traceback; traceback.print_exc()
-    
-    # Load task_milestone cog
-    try:
-        await bot.load_extension("commands.task_milestone")
-        print("✅ Task/Milestone commands loaded")
-    except Exception as e:
-        print(f"⚠️ Task/Milestone cog error: {e}")
-        import traceback
-        traceback.print_exc()
-    
-    # Load standup/collaboration cog
-    try:
-        await bot.load_extension("commands.standup")
-        print("✅ Standup/Collaboration commands loaded")
-    except Exception as e:
-        print(f"⚠️ Standup/Collaboration cog error: {e}")
-        import traceback
-        traceback.print_exc()
-    
-    # Load celebration cog
-    try:
-        await bot.load_extension("commands.celebration")
-        print("✅ Celebration commands loaded")
-    except Exception as e:
-        print(f"⚠️ Celebration cog error: {e}")
-        import traceback
-        traceback.print_exc()
-    
-    # Load productivity cog
-    try:
-        await bot.load_extension("commands.productivity")
-        print("✅ Productivity commands loaded")
-    except Exception as e:
-        print(f"⚠️ Productivity cog error: {e}")
-        import traceback
-        traceback.print_exc()
-
-    
-    # Sync slash commands with Discord
-    
-    # Sync slash commands with Discord
-    print("🔄 Syncing slash commands with Discord...")
-    try:
-        synced = await bot.tree.sync()
-        print(f"✅ Synced {len(synced)} slash command(s) globally")
-        print(f"📋 Commands: {[cmd.name for cmd in synced]}")
-    except Exception as e:
-        print(f"❌ Failed to sync commands: {e}")
-        import traceback
-        traceback.print_exc()
-    
-    await bot.change_presence(
-        activity=discord.Activity(
-            type=discord.ActivityType.listening,
-            name="/help | AI + GitHub + Reminders"
-        )
-    )
-    # Sync slash commands with Discord
-    
-    # Sync slash commands with Discord
-    print("🔄 Syncing slash commands with Discord...")
-    try:
-        synced = await bot.tree.sync()
-        print(f"✅ Synced {len(synced)} slash command(s) globally")
-        print(f"📋 Commands: {[cmd.name for cmd in synced]}")
-    except Exception as e:
-        print(f"❌ Failed to sync commands: {e}")
-        import traceback
-        traceback.print_exc()
-    
-    await bot.change_presence(
-        activity=discord.Activity(
-            type=discord.ActivityType.listening,
-            name="/help | AI + GitHub + Reminders"
-        )
-    )
-@bot.event
-async def on_guild_join(guild):
-    """When bot joins a new server"""
-    print(f"🎉 Joined guild: {guild.name} (ID: {guild.id})")
-    
-    # Sync slash commands for this guild
-    try:
-        await bot.tree.sync(guild=guild)
-        print(f"✅ Synced slash commands for guild {guild.name}")
-    except Exception as e:
-        print(f"⚠️ Failed to sync commands for {guild.name}: {e}")
-    
-    if guild.system_channel and guild.system_channel.permissions_for(guild.me).send_messages:
+    @commands.hybrid_group(name="standup", description="Manage team standups", invoke_without_command=True)
+    async def standup(self, ctx: commands.Context):
+        """Standup commands help"""
         embed = discord.Embed(
-            title="👋 Thanks for adding me!",
+            title="📋 Standup Commands",
             description=(
-                "**Quick Setup:**\n"
-                "1. Create a `git` channel\n"
-                "2. Use `/setupgit` for webhook URL\n"
-                "3. Add to GitHub repo settings\n\n"
-                "**Commands:** `/help`, `/chat`, `/reminder`, `/models`"
+                "**/standup schedule <time>** - Schedule daily standup time\n"
+                "**/standup post** - Manually post your standup update\n"
+                "**/standup skip** - Skip today's standup with reason\n"
+                "**/standup template <format>** - Customize standup format\n"
+                "**/standup list** - View standup history\n"
+                "**/standup stats** - View standup statistics"
             ),
-            color=discord.Color.green()
+            color=discord.Color.blue()
         )
-        await guild.system_channel.send(embed=embed)
+        await ctx.send(embed=embed)
 
-@bot.event
-async def on_member_join(member):
-    """Welcome new members"""
-    try:
-        await member.send(f"👋 Welcome to **{member.guild.name}**!\nType `/help` for commands.")
-        if member.guild.system_channel:
-            await member.guild.system_channel.send(f"👋 Welcome {member.mention}!")
-    except discord.Forbidden:
-        pass
-
-@bot.event
-async def on_message(message):
-    """Handle messages"""
-    if message.author == bot.user:
-        return
-    
-    content_lower = message.content.lower()
-    
-    if "fuckyou" in content_lower.replace(" ", ""):
+    @standup.command(name="schedule", description="Schedule daily standup time")
+    @app_commands.describe(
+        time="Standup time (HH:MM format, 24-hour)",
+        timezone="Timezone (default: UTC)",
+        template="Custom standup template"
+    )
+    async def standup_schedule(self, ctx: commands.Context, time: str, 
+                             timezone: str = "UTC", *, template: str = None):
+        """Schedule daily standup"""
         try:
-            await message.delete()
-            await message.channel.send(f"{message.author.mention} Please be friendly! 😊", delete_after=5)
-        except discord.Forbidden:
-            pass
-    
-    if "love you" in content_lower and not message.content.startswith('/'):
-        await message.channel.send(f"{message.author.mention} Love you too! ❤️")
-    
-    await bot.process_commands(message)
-
-# ============= SLASH COMMANDS =============
-
-@bot.hybrid_command(name="hello", description="Say hello")
-async def hello(ctx: commands.Context):
-    """Say hello"""
-    await ctx.send(f"👋 Hello {ctx.author.mention}!")
-
-@bot.hybrid_command(name="ping", description="Check bot latency")
-async def ping(ctx: commands.Context):
-    """Check latency"""
-    latency = round(bot.latency * 1000)
-    embed = discord.Embed(title="🏓 Pong!", color=discord.Color.green())
-    embed.add_field(name="Latency", value=f"{latency}ms")
-    await ctx.send(embed=embed)
-
-@bot.hybrid_command(name="serverinfo", description="Get server information")
-async def serverinfo(ctx: commands.Context):
-    """Server information"""
-    guild = ctx.guild
-    embed = discord.Embed(title=f"📊 {guild.name}", color=discord.Color.blue())
-    embed.add_field(name="Owner", value=guild.owner.mention)
-    embed.add_field(name="Members", value=guild.member_count)
-    embed.add_field(name="Roles", value=len(guild.roles))
-    if guild.icon:
-        embed.set_thumbnail(url=guild.icon.url)
-    await ctx.send(embed=embed)
-
-# ERROR HANDLERS
-@bot.event
-async def on_command_error(ctx, error):
-    """Handle errors"""
-    if isinstance(error, commands.MissingPermissions):
-        await ctx.send("❌ No permission", ephemeral=True)
-    elif isinstance(error, commands.MissingRequiredArgument):
-        await ctx.send(f"❌ Missing: `{error.param.name}`", ephemeral=True)
-    elif isinstance(error, commands.CommandNotFound):
-        pass
-    else:
-        await ctx.send(f"❌ Error: {str(error)}", ephemeral=True)
-        logger.error(f"Command error: {error}", exc_info=True)
-
-# ============= STARTUP =============
-
-def start_bot():
-    """Start the bot"""
-    global bot_thread
-    if not token:
-        print("❌ DISCORD_TOKEN not found!")
-        return
-    
-    # Initialize database
-    init_db_pool()
-    
-    # Pre-load webhook data into memory BEFORE starting bot
-    print("📦 Pre-loading webhook data from database...")
-    if load_webhook_data_from_db():
-        print(f"✅ {len(webhook_data_memory)} webhook entries loaded and ready")
-    else:
-        print("⚠️ Using memory-only storage")
-    
-    def run_bot():
-        try:
-            print("🤖 Starting bot...")
-            bot.run(token, log_handler=handler, log_level=logging.INFO)
+            # Parse time
+            try:
+                standup_time = datetime.strptime(time, "%H:%M").time()
+            except ValueError:
+                await ctx.send("❌ Invalid time format. Use HH:MM (24-hour)", ephemeral=True)
+                return
+            
+            default_template = "What did you do yesterday? What will you do today? Any blockers?"
+            template_text = template or default_template
+            
+            with self.get_db_connection() as conn:
+                if conn:
+                    with conn.cursor() as cur:
+                        # Check if schedule exists
+                        cur.execute("""
+                            SELECT id FROM standup_schedules 
+                            WHERE guild_id = %s AND active = TRUE
+                        """, (ctx.guild.id,))
+                        
+                        if cur.fetchone():
+                            # Update existing
+                            cur.execute("""
+                                UPDATE standup_schedules 
+                                SET channel_id = %s, standup_time = %s, timezone = %s, template = %s
+                                WHERE guild_id = %s AND active = TRUE
+                            """, (ctx.channel.id, standup_time, timezone, template_text, ctx.guild.id))
+                        else:
+                            # Create new
+                            cur.execute("""
+                                INSERT INTO standup_schedules (guild_id, channel_id, standup_time, timezone, template)
+                                VALUES (%s, %s, %s, %s, %s)
+                            """, (ctx.guild.id, ctx.channel.id, standup_time, timezone, template_text))
+                        
+                        conn.commit()
+                    
+                    # Update in-memory cache
+                    self.standup_schedules[ctx.guild.id] = {
+                        'channel_id': ctx.channel.id,
+                        'time': standup_time,
+                        'timezone': timezone,
+                        'template': template_text,
+                        'active': True
+                    }
+                    
+                    embed = discord.Embed(
+                        title="✅ Standup Scheduled",
+                        description=f"Daily standup scheduled for **{time}** ({timezone})",
+                        color=discord.Color.green()
+                    )
+                    embed.add_field(name="Channel", value=ctx.channel.mention, inline=True)
+                    embed.add_field(name="Template", value=template_text, inline=False)
+                    await ctx.send(embed=embed)
+                else:
+                    await ctx.send("❌ Database connection unavailable. Please try again later.", ephemeral=True)
+                    
         except Exception as e:
-            logger.error(f"Bot failed: {e}")
-    
-    bot_thread = threading.Thread(target=run_bot, daemon=True)
-    bot_thread.start()
-    print("✅ Bot thread started")
+            logger.error(f"standup_schedule error: {e}")
+            await ctx.send("❌ Failed to schedule standup.", ephemeral=True)
 
-# Start bot
-start_bot()
+    @standup.command(name="post", description="Manually post your standup update")
+    @app_commands.describe(content="Your standup update")
+    async def standup_post(self, ctx: commands.Context, *, content: str):
+        """Post standup update"""
+        try:
+            today = datetime.utcnow().date()
+            
+            with self.get_db_connection() as conn:
+                if conn:
+                    with conn.cursor() as cur:
+                        # Check if already posted today
+                        cur.execute("""
+                            SELECT id FROM standup_posts 
+                            WHERE user_id = %s AND guild_id = %s AND post_date = %s
+                        """, (ctx.author.id, ctx.guild.id, today))
+                        
+                        if cur.fetchone():
+                            await ctx.send("❌ You've already posted your standup today!", ephemeral=True)
+                            return
+                        
+                        # Save standup post
+                        cur.execute("""
+                            INSERT INTO standup_posts (user_id, guild_id, channel_id, post_date, content)
+                            VALUES (%s, %s, %s, %s, %s)
+                        """, (ctx.author.id, ctx.guild.id, ctx.channel.id, today, content))
+                        conn.commit()
+                    
+                    embed = discord.Embed(
+                        title="📋 Standup Update",
+                        description=content,
+                        color=discord.Color.blue()
+                    )
+                    embed.set_author(name=ctx.author.display_name, icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
+                    embed.set_footer(text=f"Posted on {today}")
+                    
+                    await ctx.send(embed=embed)
+                else:
+                    await ctx.send("❌ Database connection unavailable. Please try again later.", ephemeral=True)
+                    
+        except Exception as e:
+            logger.error(f"standup_post error: {e}")
+            await ctx.send("❌ Failed to post standup.", ephemeral=True)
 
-if __name__ == "__main__":
-    print("🌐 Starting Flask...")
-    app.run(host="0.0.0.0", port=port, debug=False)
+    @standup.command(name="skip", description="Skip today's standup with reason")
+    @app_commands.describe(reason="Reason for skipping")
+    async def standup_skip(self, ctx: commands.Context, *, reason: str = "No reason provided"):
+        """Skip standup"""
+        try:
+            today = datetime.utcnow().date()
+            
+            with self.get_db_connection() as conn:
+                if conn:
+                    with conn.cursor() as cur:
+                        # Check if already posted today
+                        cur.execute("""
+                            SELECT id FROM standup_posts 
+                            WHERE user_id = %s AND guild_id = %s AND post_date = %s
+                        """, (ctx.author.id, ctx.guild.id, today))
+                        
+                        if cur.fetchone():
+                            await ctx.send("❌ You've already posted your standup today!", ephemeral=True)
+                            return
+                        
+                        # Save skip record
+                        cur.execute("""
+                            INSERT INTO standup_posts (user_id, guild_id, channel_id, post_date, content, skipped, skip_reason)
+                            VALUES (%s, %s, %s, %s, %s, TRUE, %s)
+                        """, (ctx.author.id, ctx.guild.id, ctx.channel.id, today, "Skipped", reason))
+                        conn.commit()
+                    
+                    embed = discord.Embed(
+                        title="⏭️ Standup Skipped",
+                        description=f"**Reason:** {reason}",
+                        color=discord.Color.orange()
+                    )
+                    embed.set_author(name=ctx.author.display_name, icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
+                    embed.set_footer(text=f"Skipped on {today}")
+                    
+                    await ctx.send(embed=embed)
+                else:
+                    await ctx.send("❌ Database connection unavailable. Please try again later.", ephemeral=True)
+                    
+        except Exception as e:
+            logger.error(f"standup_skip error: {e}")
+            await ctx.send("❌ Failed to skip standup.", ephemeral=True)
 
+    @standup.command(name="template", description="Customize standup format")
+    @app_commands.describe(template="New standup template")
+    async def standup_template(self, ctx: commands.Context, *, template: str):
+        """Update standup template"""
+        try:
+            with self.get_db_connection() as conn:
+                if conn:
+                    with conn.cursor() as cur:
+                        # Update template
+                        cur.execute("""
+                            UPDATE standup_schedules 
+                            SET template = %s 
+                            WHERE guild_id = %s AND active = TRUE
+                        """, (template, ctx.guild.id))
+                        conn.commit()
+                        
+                        # Update in-memory cache
+                        if ctx.guild.id in self.standup_schedules:
+                            self.standup_schedules[ctx.guild.id]['template'] = template
+                    
+                    embed = discord.Embed(
+                        title="✅ Standup Template Updated",
+                        description=f"**New Template:**\n{template}",
+                        color=discord.Color.green()
+                    )
+                    await ctx.send(embed=embed)
+                else:
+                    await ctx.send("❌ Database connection unavailable. Please try again later.", ephemeral=True)
+                    
+        except Exception as e:
+            logger.error(f"standup_template error: {e}")
+            await ctx.send("❌ Failed to update template.", ephemeral=True)
 
+    @standup.command(name="list", description="View standup history")
+    @app_commands.describe(days="Number of days to show (default: 7)")
+    async def standup_list(self, ctx: commands.Context, days: int = 7):
+        """List standup history"""
+        try:
+            with self.get_db_connection() as conn:
+                if conn:
+                    with conn.cursor() as cur:
+                        cur.execute("""
+                            SELECT user_id, post_date, content, skipped, skip_reason, created_at
+                            FROM standup_posts 
+                            WHERE guild_id = %s AND post_date >= %s
+                            ORDER BY post_date DESC, created_at DESC
+                            LIMIT 20
+                        """, (ctx.guild.id, datetime.utcnow().date() - timedelta(days=days)))
+                        rows = cur.fetchall()
+                    
+                    if not rows:
+                        await ctx.send("📝 No standup posts found.")
+                        return
+                    
+                    embed = discord.Embed(
+                        title=f"📋 Standup History (Last {days} days)",
+                        color=discord.Color.blue()
+                    )
+                    
+                    for user_id, post_date, content, skipped, skip_reason, created_at in rows[:10]:
+                        user = self.bot.get_user(user_id)
+                        user_name = user.display_name if user else f"User {user_id}"
+                        
+                        if skipped:
+                            embed.add_field(
+                                name=f"⏭️ {user_name} - {post_date}",
+                                value=f"*Skipped: {skip_reason}*",
+                                inline=False
+                            )
+                        else:
+                            embed.add_field(
+                                name=f"📋 {user_name} - {post_date}",
+                                value=content[:200] + "..." if len(content) > 200 else content,
+                                inline=False
+                            )
+                    
+                    await ctx.send(embed=embed)
+                else:
+                    await ctx.send("❌ Database connection unavailable. Please try again later.", ephemeral=True)
+                    
+        except Exception as e:
+            logger.error(f"standup_list error: {e}")
+            await ctx.send("❌ Failed to list standups.", ephemeral=True)
 
+    # ===== COLLABORATION COMMANDS =====
 
+    @commands.hybrid_command(name="sync", description="Request a sync meeting with someone")
+    @app_commands.describe(
+        user="User to sync with",
+        message="Optional message for the sync request"
+    )
+    async def sync_request(self, ctx: commands.Context, user: discord.Member, *, message: str = None):
+        """Request sync meeting"""
+        try:
+            if user == ctx.author:
+                await ctx.send("❌ You can't sync with yourself!", ephemeral=True)
+                return
+            
+            request_id = f"SYNC{int(datetime.utcnow().timestamp())}"
+            
+            with self.get_db_connection() as conn:
+                if conn:
+                    with conn.cursor() as cur:
+                        cur.execute("""
+                            INSERT INTO sync_requests (request_id, requester_id, target_id, guild_id, channel_id, message)
+                            VALUES (%s, %s, %s, %s, %s, %s)
+                        """, (request_id, ctx.author.id, user.id, ctx.guild.id, ctx.channel.id, message))
+                        conn.commit()
+                    
+                    embed = discord.Embed(
+                        title="🤝 Sync Request Sent",
+                        description=f"**From:** {ctx.author.mention}\n**To:** {user.mention}",
+                        color=discord.Color.blue()
+                    )
+                    if message:
+                        embed.add_field(name="Message", value=message, inline=False)
+                    embed.set_footer(text=f"Request ID: {request_id}")
+                    
+                    await ctx.send(embed=embed)
+                    
+                    # Send DM to target user
+                    try:
+                        dm_embed = discord.Embed(
+                            title="🤝 Sync Request",
+                            description=f"{ctx.author.mention} wants to sync with you!",
+                            color=discord.Color.blue()
+                        )
+                        if message:
+                            dm_embed.add_field(name="Message", value=message, inline=False)
+                        dm_embed.add_field(name="Server", value=ctx.guild.name, inline=True)
+                        dm_embed.add_field(name="Channel", value=ctx.channel.mention, inline=True)
+                        dm_embed.set_footer(text=f"Request ID: {request_id}")
+                        
+                        await user.send(embed=dm_embed)
+                    except discord.Forbidden:
+                        pass  # User has DMs disabled
+                else:
+                    await ctx.send("❌ Database connection unavailable. Please try again later.", ephemeral=True)
+                    
+        except Exception as e:
+            logger.error(f"sync_request error: {e}")
+            await ctx.send("❌ Failed to send sync request.", ephemeral=True)
 
+    @commands.hybrid_command(name="pair", description="Start pair programming session")
+    @app_commands.describe(
+        user="User to pair with",
+        topic="Optional topic for the session"
+    )
+    async def pair_start(self, ctx: commands.Context, user: discord.Member, *, topic: str = None):
+        """Start pair programming session"""
+        try:
+            if user == ctx.author:
+                await ctx.send("❌ You can't pair with yourself!", ephemeral=True)
+                return
+            
+            session_id = f"PAIR{int(datetime.utcnow().timestamp())}"
+            
+            with self.get_db_connection() as conn:
+                if conn:
+                    with conn.cursor() as cur:
+                        cur.execute("""
+                            INSERT INTO pair_sessions (session_id, user1_id, user2_id, guild_id, channel_id, start_time, topic)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        """, (session_id, ctx.author.id, user.id, ctx.guild.id, ctx.channel.id, datetime.utcnow(), topic))
+                        conn.commit()
+                    
+                    # Store in memory for quick access
+                    self.pair_sessions[session_id] = {
+                        'user1': ctx.author.id,
+                        'user2': user.id,
+                        'start_time': datetime.utcnow(),
+                        'topic': topic
+                    }
+                    
+                    embed = discord.Embed(
+                        title="👥 Pair Programming Started",
+                        description=f"**Pair:** {ctx.author.mention} & {user.mention}",
+                        color=discord.Color.green()
+                    )
+                    if topic:
+                        embed.add_field(name="Topic", value=topic, inline=False)
+                    embed.set_footer(text=f"Session ID: {session_id}")
+                    
+                    await ctx.send(embed=embed)
+                else:
+                    await ctx.send("❌ Database connection unavailable. Please try again later.", ephemeral=True)
+                    
+        except Exception as e:
+            logger.error(f"pair_start error: {e}")
+            await ctx.send("❌ Failed to start pair session.", ephemeral=True)
 
+    @commands.hybrid_command(name="pair", description="End pair programming session")
+    async def pair_end(self, ctx: commands.Context):
+        """End pair programming session"""
+        try:
+            # Find active session for this user
+            active_session = None
+            for session_id, session_data in self.pair_sessions.items():
+                if session_data['user1'] == ctx.author.id or session_data['user2'] == ctx.author.id:
+                    active_session = session_id
+                    break
+            
+            if not active_session:
+                await ctx.send("❌ No active pair programming session found!", ephemeral=True)
+                return
+            
+            session_data = self.pair_sessions[active_session]
+            start_time = session_data['start_time']
+            duration = datetime.utcnow() - start_time
+            duration_minutes = int(duration.total_seconds() / 60)
+            
+            with self.get_db_connection() as conn:
+                if conn:
+                    with conn.cursor() as cur:
+                        cur.execute("""
+                            UPDATE pair_sessions 
+                            SET end_time = %s, duration_minutes = %s
+                            WHERE session_id = %s
+                        """, (datetime.utcnow(), duration_minutes, active_session))
+                        conn.commit()
+                    
+                    # Remove from memory
+                    del self.pair_sessions[active_session]
+                    
+                    user1 = self.bot.get_user(session_data['user1'])
+                    user2 = self.bot.get_user(session_data['user2'])
+                    
+                    embed = discord.Embed(
+                        title="✅ Pair Programming Ended",
+                        description=f"**Pair:** {user1.mention if user1 else 'Unknown'} & {user2.mention if user2 else 'Unknown'}",
+                        color=discord.Color.orange()
+                    )
+                    embed.add_field(name="Duration", value=f"{duration_minutes} minutes", inline=True)
+                    if session_data['topic']:
+                        embed.add_field(name="Topic", value=session_data['topic'], inline=True)
+                    embed.set_footer(text=f"Session ID: {active_session}")
+                    
+                    await ctx.send(embed=embed)
+                else:
+                    await ctx.send("❌ Database connection unavailable. Please try again later.", ephemeral=True)
+                    
+        except Exception as e:
+            logger.error(f"pair_end error: {e}")
+            await ctx.send("❌ Failed to end pair session.", ephemeral=True)
 
-
+async def setup(bot: commands.Bot):
+    """Setup function for the cog"""
+    try:
+        get_db_connection_func = getattr(bot, "get_db_connection", None)
+        if not get_db_connection_func:
+            logger.error("❌ get_db_connection not found on bot instance")
+            return
+        
+        await bot.add_cog(Standup(bot, get_db_connection_func))
+        logger.info("✅ Standup/Collaboration cog loaded successfully")
+    except Exception as e:
+        logger.error(f"❌ Failed to setup Standup/Collaboration cog: {e}")
+        import traceback
+        traceback.print_exc()
