@@ -180,4 +180,200 @@ class Standup(commands.Cog):
     @app_commands.describe(
         channel="Channel for standup messages",
         time="Time for standup (HH:MM 24-hour format)",
-        days="Days of
+        days="Days of the week (comma-separated: Mon,Tue,Wed,Thu,Fri)"
+    )
+    async def standup_schedule(
+        self,
+        interaction: discord.Interaction,
+        channel: discord.TextChannel,
+        time: str,
+        days: str = "Mon,Tue,Wed,Thu,Fri"
+    ):
+        try:
+            hour, minute = map(int, time.split(':'))
+            if not (0 <= hour < 24 and 0 <= minute < 60):
+                raise Exception()
+        except:
+            await interaction.response.send_message("❌ Invalid time format. Use HH:MM (24-hour format).", ephemeral=True)
+            return
+        try:
+            with self.get_db_connection() as conn:
+                if conn:
+                    with conn.cursor() as cur:
+                        cur.execute("""
+                            INSERT INTO standup_schedules 
+                                (guild_id, channel_id, schedule_time, days_of_week)
+                            VALUES (%s, %s, %s, %s)
+                            ON CONFLICT (guild_id, channel_id) 
+                            DO UPDATE SET schedule_time = EXCLUDED.schedule_time, 
+                                        days_of_week = EXCLUDED.days_of_week,
+                                        is_active = TRUE
+                        """, (interaction.guild_id, channel.id, time, days))
+                        conn.commit()
+            await self.load_standup_schedules()
+            embed = discord.Embed(
+                title="⏰ Standup Schedule Set",
+                color=discord.Color.green()
+            )
+            embed.add_field(name="Channel", value=channel.mention, inline=False)
+            embed.add_field(name="Time", value=time, inline=True)
+            embed.add_field(name="Days", value=days, inline=True)
+            embed.set_footer(text="Standup reminders will be posted automatically")
+            await interaction.response.send_message(embed=embed)
+        except Exception as e:
+            logger.error(f"Standup schedule error: {e}")
+            await interaction.response.send_message("❌ Failed to schedule standup.", ephemeral=True)
+
+    @app_commands.command(name="standup_cancel", description="Cancel scheduled standup reminders for this server")
+    async def standup_cancel(self, interaction: discord.Interaction):
+        try:
+            with self.get_db_connection() as conn:
+                if conn:
+                    with conn.cursor() as cur:
+                        cur.execute("""
+                            UPDATE standup_schedules
+                            SET is_active = FALSE
+                            WHERE guild_id = %s
+                        """, (interaction.guild_id,))
+                        conn.commit()
+            await self.load_standup_schedules()
+            await interaction.response.send_message("✅ Standup schedules have been cancelled.")
+        except Exception as e:
+            logger.error(f"Standup cancel error: {e}")
+            await interaction.response.send_message("❌ Failed to cancel standup schedule.", ephemeral=True)
+
+    # --- Pair Programming ---
+
+    @app_commands.command(name="pair_random", description="Get paired with a random online member")
+    async def pair_random(self, interaction: discord.Interaction):
+        online_members = [
+            m for m in interaction.guild.members
+            if m.status != discord.Status.offline 
+            and not m.bot 
+            and m.id != interaction.user.id
+        ]
+        if not online_members:
+            await interaction.response.send_message("❌ No other members are currently online.", ephemeral=True)
+            return
+        import random
+        partner = random.choice(online_members)
+        embed = discord.Embed(
+            title="👥 Pair Programming Match",
+            description=f"{interaction.user.mention} has been paired with {partner.mention}!",
+            color=discord.Color.purple(),
+            timestamp=datetime.utcnow()
+        )
+        embed.add_field(
+            name="Next Steps",
+            value="• Start a voice channel\n• Share your screen\n• Start coding together!",
+            inline=False
+        )
+        try:
+            with self.get_db_connection() as conn:
+                if conn:
+                    with conn.cursor() as cur:
+                        cur.execute("""
+                            INSERT INTO pair_sessions 
+                                (guild_id, user1_id, user2_id, start_time)
+                            VALUES (%s, %s, %s, %s)
+                        """, (interaction.guild_id, interaction.user.id, partner.id, datetime.utcnow()))
+                        conn.commit()
+            await interaction.response.send_message(embed=embed)
+        except Exception as e:
+            logger.error(f"Pair random error: {e}")
+            await interaction.response.send_message("❌ Failed to find a pair.", ephemeral=True)
+
+    @app_commands.command(name="pair_with", description="Request to pair with a specific member")
+    @app_commands.describe(member="The member you want to pair with")
+    async def pair_with(self, interaction: discord.Interaction, member: discord.Member):
+        if member.bot or member.id == interaction.user.id:
+            await interaction.response.send_message("❌ Invalid member.", ephemeral=True)
+            return
+        embed = discord.Embed(
+            title="👥 Pair Programming Request",
+            description=f"{interaction.user.mention} wants to pair program with you!",
+            color=discord.Color.blue(),
+            timestamp=datetime.utcnow()
+        )
+        embed.add_field(
+            name="Respond",
+            value="React with ✅ to accept or ❌ to decline",
+            inline=False
+        )
+        await interaction.response.send_message(
+            content=member.mention,
+            embed=embed
+        )
+        message = await interaction.original_response()
+        await message.add_reaction("✅")
+        await message.add_reaction("❌")
+
+    @app_commands.command(name="pair_stats", description="View your pair programming statistics")
+    @app_commands.describe(member="Member to check stats for (optional)")
+    async def pair_stats(self, interaction: discord.Interaction, member: Optional[discord.Member] = None):
+        target = member or interaction.user
+        try:
+            with self.get_db_connection() as conn:
+                if conn:
+                    with conn.cursor() as cur:
+                        cur.execute("""
+                            SELECT COUNT(*) FROM pair_sessions
+                            WHERE guild_id = %s AND (user1_id = %s OR user2_id = %s)
+                        """, (interaction.guild_id, target.id, target.id))
+                        total_sessions = cur.fetchone()[0]
+            embed = discord.Embed(
+                title=f"📊 Pair Programming Stats: {target.display_name}",
+                color=discord.Color.gold()
+            )
+            embed.add_field(name="Total Sessions", value=str(total_sessions), inline=True)
+            embed.set_thumbnail(url=target.display_avatar.url)
+            await interaction.response.send_message(embed=embed)
+        except Exception as e:
+            logger.error(f"Pair stats error: {e}")
+            await interaction.response.send_message("❌ Failed to fetch pair stats.", ephemeral=True)
+
+    # --- Background standup reminder task ---
+
+    @tasks.loop(minutes=1)
+    async def check_scheduled_standups(self):
+        now = datetime.utcnow()
+        current_time = now.strftime("%H:%M")
+        current_day = now.strftime("%a")
+        for schedule in self.standup_schedules:
+            schedule_id, guild_id, channel_id, schedule_time, days_of_week, timezone = schedule
+            if current_day not in days_of_week:
+                continue
+            # schedule_time is a string "HH:MM:SS", match "HH:MM"
+            if current_time == schedule_time.strftime("%H:%M"):
+                guild = self.bot.get_guild(guild_id)
+                if guild:
+                    channel = guild.get_channel(channel_id)
+                    if channel:
+                        await self.post_standup_reminder(channel, guild_id)
+
+    @check_scheduled_standups.before_loop
+    async def before_check_scheduled_standups(self):
+        await self.bot.wait_until_ready()
+
+    async def post_standup_reminder(self, channel: discord.TextChannel, guild_id: int):
+        embed = discord.Embed(
+            title="🌅 Daily Standup Time!",
+            description="Time to submit your daily standup update using `/standup`",
+            color=discord.Color.orange(),
+            timestamp=datetime.utcnow()
+        )
+        embed.add_field(
+            name="What to include:",
+            value="• What you did yesterday\n• What you're doing today\n• Any blockers",
+            inline=False
+        )
+        await channel.send(embed=embed)
+        logger.info(f"Posted standup reminder to guild {guild_id}")
+
+async def setup(bot: commands.Bot):
+    get_db_connection_func = getattr(bot, "get_db_connection", None)
+    if not get_db_connection_func:
+        logger.error("❌ get_db_connection not found on bot instance")
+        raise Exception("Database connection function not found")
+    await bot.add_cog(Standup(bot, get_db_connection_func))
+    logger.info("✅ Standup/Collaboration cog loaded successfully")
