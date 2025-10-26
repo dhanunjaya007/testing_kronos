@@ -409,7 +409,7 @@ async def on_ready():
     except Exception as e:
         print(f"⚠️ Productivity cog error: {e}")
         import traceback
-        traceback.print_exc()n.get("PORT", 10000))
+        traceback.print_exc()n.get("PORT", 10000)
 
 # OpenRouter API Configuration
 OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY', '').strip()
@@ -947,6 +947,7 @@ start_bot()
 if __name__ == "__main__":
     print("🌐 Starting Flask...")
     app.run(host="0.0.0.0", port=port, debug=False)
+
 
 
 
