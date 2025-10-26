@@ -31,6 +31,9 @@ handler = logging.FileHandler(filename='discord.log', encoding='utf-8', mode='w'
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
+intents.presences = True  # REQUIRED for code editor tracking!
+
+# Also move this line BEFORE loading cogs (around line 365):
 
 # Initialize bot with HYBRID commands (supports both / prefix and slash commands)
 bot = commands.Bot(command_prefix='/', intents=intents)
@@ -559,6 +562,7 @@ if __name__ == "__main__":
 else:
     # When running under Gunicorn, start bot using the existing function
     start_bot()
+
 
 
 
