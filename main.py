@@ -405,7 +405,46 @@ async def on_ready():
         print(f"⚠️ Productivity cog error: {e}")
         import traceback
         traceback.print_exc()
+        
+    try:
+        await bot.load_extension("commands.report")
+        print("✅ report commands loaded")
+    except Exception as e:
+        print(f"⚠️ report cog error: {e}")
+        import traceback
+        traceback.print_exc()
 
+    try:
+        await bot.load_extension("commands.timetracking")
+        print("✅ timetracking commands loaded")
+    except Exception as e:
+        print(f"⚠️ timetracking cog error: {e}")
+        import traceback
+        traceback.print_exc()
+
+    try:
+        await bot.load_extension("commands.progress_tracking")
+        print("✅ progess_tracking commands loaded")
+    except Exception as e:
+        print(f"⚠️ progress_tracking cog error: {e}")
+        import traceback
+        traceback.print_exc()
+
+    try:
+        await bot.load_extension("commands.gamification_XPsystem")
+        print("✅ gamification_XPsystem commands loaded")
+    except Exception as e:
+        print(f"⚠️ gamification_XPsystem cog error: {e}")
+        import traceback
+        traceback.print_exc()
+
+    try:
+        await bot.load_extension("commands.collaboration_notification")
+        print("✅ collaboration_notification commands loaded")
+    except Exception as e:
+        print(f"⚠️ collabration_notification cog error: {e}")
+        import traceback
+        traceback.print_exc()
     
     # Sync slash commands with Discord
     
@@ -562,6 +601,7 @@ if __name__ == "__main__":
 else:
     # When running under Gunicorn, start bot using the existing function
     start_bot()
+
 
 
 
