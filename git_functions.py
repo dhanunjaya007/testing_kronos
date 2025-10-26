@@ -113,7 +113,7 @@ def register_github_routes(app, bot, get_webhook_data, ensure_tokens_loaded, DEP
                             webhook_url,
                             json={"embeds": [embed]},
                             headers={"Content-Type": "application/json"},
-                            timeout=30
+                            timeout=50
                         )
 
                         if response.status_code not in [204, 200]:
@@ -130,7 +130,7 @@ def register_github_routes(app, bot, get_webhook_data, ensure_tokens_loaded, DEP
                         requests.post(
                             webhook_url,
                             json={"content": f"⚠️ **{total_commits - 50}** more commits not shown. View at {repo_url}"},
-                            timeout=30
+                            timeout=50
                         )
                     except:
                         pass
@@ -139,7 +139,7 @@ def register_github_routes(app, bot, get_webhook_data, ensure_tokens_loaded, DEP
                     requests.post(
                         webhook_url,
                         json={"content": f"🔔 GitHub event (`{event_type}`) from **{repo_name}** by **{pusher}**"},
-                        timeout=30
+                        timeout=50
                     )
                 except Exception as e:
                     logger.error(f"❌ Error sending to Discord webhook: {e}")
