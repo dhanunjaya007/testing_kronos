@@ -5,12 +5,12 @@ from datetime import datetime
 import logging
 from typing import Optional, Literal
 
-logger = logging.getLogger(_name_)
+logger = logging.getLogger(__name__)  # FIXED: Changed _name_ to __name__
 
 class KanbanBoard(commands.Cog):
     """Visual Kanban board for task management"""
     
-    def _init_(self, bot, get_db_connection_func):
+    def __init__(self, bot, get_db_connection_func):  # FIXED: Changed _init_ to __init__
         self.bot = bot
         self.get_db_connection = get_db_connection_func
         self.init_db_tables()
@@ -74,7 +74,7 @@ class KanbanBoard(commands.Cog):
                         conn.commit()
                     logger.info("✅ Kanban tables initialized")
                 else:
-                    logger.warning("⚠ Database connection not available")
+                    logger.warning("⚠️ Database connection not available")
         except Exception as e:
             logger.error(f"❌ Failed to initialize Kanban tables: {e}")
             import traceback
@@ -108,13 +108,13 @@ class KanbanBoard(commands.Cog):
         embed = discord.Embed(
             title="📋 Kanban Board Commands",
             description=(
-                "/kanban view** - Display Kanban board\n"
-                "/kanban move <task_id> <column>** - Move task to column\n"
-                "/kanban columns** - List all columns\n"
-                "/kanban add_column <name>** - Add custom column\n"
-                "/kanban remove_column <name>** - Remove custom column\n"
-                "/kanban clear <column>** - Clear all tasks from column\n"
-                "/kanban swimlane <action> <name>** - Manage swimlanes"
+                "**/kanban view** - Display Kanban board\n"
+                "**/kanban move <task_id> <column>** - Move task to column\n"
+                "**/kanban columns** - List all columns\n"
+                "**/kanban add_column <name>** - Add custom column\n"
+                "**/kanban remove_column <name>** - Remove custom column\n"
+                "**/kanban clear <column>** - Clear all tasks from column\n"
+                "**/kanban swimlane <action> <name>** - Manage swimlanes"
             ),
             color=discord.Color.blue()
         )
@@ -262,7 +262,7 @@ class KanbanBoard(commands.Cog):
             
             embed = discord.Embed(
                 title="✅ Task Moved",
-                description=f"{result[0]}\n\nMoved to: {column.upper().replace('_', ' ')}",
+                description=f"**{result[0]}**\n\nMoved to: **{column.upper().replace('_', ' ')}**",
                 color=discord.Color.green()
             )
             await ctx.send(embed=embed)
@@ -320,12 +320,12 @@ class KanbanBoard(commands.Cog):
                     result = cur.fetchone()
                     
                     if not result:
-                        await ctx.send(f"❌ Column {name} already exists.", ephemeral=True)
+                        await ctx.send(f"❌ Column **{name}** already exists.", ephemeral=True)
                         return
                     
                     conn.commit()
             
-            await ctx.send(f"✅ Added column: {name.upper()}")
+            await ctx.send(f"✅ Added column: **{name.upper()}**")
             
         except Exception as e:
             logger.error(f"kanban_add_column error: {e}")
@@ -360,7 +360,7 @@ class KanbanBoard(commands.Cog):
                     
                     if count > 0:
                         await ctx.send(
-                            f"❌ Cannot remove column with {count} tasks. Move them first.",
+                            f"❌ Cannot remove column with **{count}** tasks. Move them first.",
                             ephemeral=True
                         )
                         return
@@ -375,12 +375,12 @@ class KanbanBoard(commands.Cog):
                     result = cur.fetchone()
                     
                     if not result:
-                        await ctx.send(f"❌ Column {name} not found.", ephemeral=True)
+                        await ctx.send(f"❌ Column **{name}** not found.", ephemeral=True)
                         return
                     
                     conn.commit()
             
-            await ctx.send(f"✅ Removed column: {name.upper()}")
+            await ctx.send(f"✅ Removed column: **{name.upper()}**")
             
         except Exception as e:
             logger.error(f"kanban_remove_column error: {e}")
@@ -418,7 +418,7 @@ class KanbanBoard(commands.Cog):
                     cleared = cur.fetchall()
                     conn.commit()
             
-            await ctx.send(f"🧹 Cleared {len(cleared)} tasks from {column.upper().replace('_', ' ')}")
+            await ctx.send(f"🧹 Cleared **{len(cleared)}** tasks from **{column.upper().replace('_', ' ')}**")
             
         except Exception as e:
             logger.error(f"kanban_clear error: {e}")
@@ -482,11 +482,11 @@ class KanbanBoard(commands.Cog):
                         result = cur.fetchone()
                         
                         if not result:
-                            await ctx.send(f"❌ Swimlane {name} already exists.", ephemeral=True)
+                            await ctx.send(f"❌ Swimlane **{name}** already exists.", ephemeral=True)
                             return
                         
                         conn.commit()
-                        await ctx.send(f"✅ Created swimlane: {name}")
+                        await ctx.send(f"✅ Created swimlane: **{name}**")
                         
                     elif action == "delete":
                         cur.execute("""
@@ -498,11 +498,11 @@ class KanbanBoard(commands.Cog):
                         result = cur.fetchone()
                         
                         if not result:
-                            await ctx.send(f"❌ Swimlane {name} not found.", ephemeral=True)
+                            await ctx.send(f"❌ Swimlane **{name}** not found.", ephemeral=True)
                             return
                         
                         conn.commit()
-                        await ctx.send(f"🗑 Deleted swimlane: {name}")
+                        await ctx.send(f"🗑️ Deleted swimlane: **{name}**")
             
         except Exception as e:
             logger.error(f"kanban_swimlane error: {e}")
@@ -514,10 +514,10 @@ class KanbanBoard(commands.Cog):
         embed = discord.Embed(
             title="📋 Board Commands",
             description=(
-                "/board view [type]** - Display board\n"
-                "/board move <task_id> <column>** - Move task\n"
-                "/board filter <criteria>** - Filter board view\n"
-                "/board archive** - Archive completed tasks"
+                "**/board view [type]** - Display board\n"
+                "**/board move <task_id> <column>** - Move task\n"
+                "**/board filter <criteria>** - Filter board view\n"
+                "**/board archive** - Archive completed tasks"
             ),
             color=discord.Color.blue()
         )
@@ -588,7 +588,7 @@ class KanbanBoard(commands.Cog):
                     tasks = cur.fetchall()
             
             if not tasks:
-                await ctx.send(f"📋 No tasks found matching filter: *{filter_type}={value}*")
+                await ctx.send(f"📋 No tasks found matching filter: **{filter_type}={value}**")
                 return
             
             embed = discord.Embed(
@@ -648,7 +648,7 @@ class KanbanBoard(commands.Cog):
                     archived = cur.fetchall()
                     conn.commit()
             
-            await ctx.send(f"📦 Archived {len(archived)} completed tasks.")
+            await ctx.send(f"📦 Archived **{len(archived)}** completed tasks.")
             
         except Exception as e:
             logger.error(f"board_archive error: {e}")
