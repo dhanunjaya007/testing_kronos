@@ -688,7 +688,6 @@ async def on_ready():
         "commands.task_milestone",
         "commands.celebration",
         "commands.productivity",
-        "commands.kanban",  # FIXED KANBAN COG
         "commands.progress_tracking",
         "commands.gamification_XPsystem",
         "commands.collaboration_notification"
@@ -817,4 +816,5 @@ if __name__ == "__main__":
     app.run(host="0.0.0.0", port=port, debug=False)
 else:
     start_bot()
+
 
