@@ -3,7 +3,7 @@ from discord.ext import commands
 from discord import app_commands
 from datetime import datetime, timedelta
 import logging
-from typing import Optional
+from typing import Optional, Literal
 import random
 
 logger = logging.getLogger(__name__)
