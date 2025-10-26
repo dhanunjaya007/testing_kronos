@@ -474,12 +474,26 @@ class Productivity(commands.Cog):
 
     # ===== DND COMMANDS =====
 
-    @commands.hybrid_command(name="dnd", description="Set Do Not Disturb mode")
+    @commands.hybrid_group(name="dnd", description="Do Not Disturb mode", invoke_without_command=True)
+    async def dnd(self, ctx: commands.Context):
+        """DND commands help"""
+        embed = discord.Embed(
+            title="🔕 Do Not Disturb Commands",
+            description=(
+                "**/dnd start <duration> [reason]** - Enable DND mode\n"
+                "**/dnd end** - Disable DND mode\n"
+                "**/dnd status** - Check your DND status"
+            ),
+            color=discord.Color.dark_gray()
+        )
+        await ctx.send(embed=embed)
+
+    @dnd.command(name="start", description="Enable Do Not Disturb mode")
     @app_commands.describe(
         duration="DND duration in minutes",
         reason="Reason for DND mode"
     )
-    async def dnd_mode(self, ctx: commands.Context, duration: int, *, reason: str = "Focus time"):
+    async def dnd_start(self, ctx: commands.Context, duration: int, *, reason: str = "Focus time"):
         """Set DND mode"""
         try:
             if ctx.author.id in self.dnd_users:
@@ -530,10 +544,10 @@ class Productivity(commands.Cog):
                     await ctx.send("❌ Database connection unavailable. Please try again later.", ephemeral=True)
                     
         except Exception as e:
-            logger.error(f"dnd_mode error: {e}")
+            logger.error(f"dnd_start error: {e}")
             await ctx.send("❌ Failed to set DND mode.", ephemeral=True)
 
-    @commands.hybrid_command(name="dnd", description="End Do Not Disturb mode")
+    @dnd.command(name="end", description="Disable Do Not Disturb mode")
     async def dnd_end(self, ctx: commands.Context):
         """End DND mode"""
         try:
