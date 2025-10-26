@@ -188,6 +188,8 @@ def init_all_database_tables():
                         block_reason TEXT,
                         estimated_hours DECIMAL(5,2) DEFAULT 0,
                         time_logged DECIMAL(5,2) DEFAULT 0,
+                        kanban_column TEXT DEFAULT 'todo',
+                        swimlane TEXT,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
                 """)
@@ -424,19 +426,6 @@ def init_all_database_tables():
                     )
                 """)
                 
-                # Standup responses
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS standup_responses (
-                        id SERIAL PRIMARY KEY,
-                        user_id BIGINT NOT NULL,
-                        guild_id BIGINT NOT NULL,
-                        yesterday TEXT,
-                        today TEXT,
-                        blockers TEXT,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    )
-                """)
-                
                 # User status
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS user_status (
@@ -446,6 +435,60 @@ def init_all_database_tables():
                         status_message TEXT,
                         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         UNIQUE(user_id, guild_id)
+                    )
+                """)
+                
+                # Countdowns (NEW)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS countdowns (
+                        id SERIAL PRIMARY KEY,
+                        countdown_id TEXT NOT NULL UNIQUE,
+                        event_name TEXT NOT NULL,
+                        end_time TIMESTAMP NOT NULL,
+                        channel_id BIGINT NOT NULL,
+                        user_id BIGINT NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        active BOOLEAN DEFAULT TRUE
+                    )
+                """)
+                
+                # Timers (NEW)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS timers (
+                        id SERIAL PRIMARY KEY,
+                        timer_id TEXT NOT NULL UNIQUE,
+                        user_id BIGINT NOT NULL,
+                        channel_id BIGINT NOT NULL,
+                        duration_seconds INT NOT NULL,
+                        message TEXT,
+                        start_time TIMESTAMP NOT NULL,
+                        end_time TIMESTAMP NOT NULL,
+                        completed BOOLEAN DEFAULT FALSE,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                
+                # Kanban columns (NEW)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS kanban_columns (
+                        id SERIAL PRIMARY KEY,
+                        guild_id BIGINT NOT NULL,
+                        column_name TEXT NOT NULL,
+                        position INT NOT NULL,
+                        is_default BOOLEAN DEFAULT FALSE,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE(guild_id, column_name)
+                    )
+                """)
+                
+                # Kanban swimlanes (NEW)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS kanban_swimlanes (
+                        id SERIAL PRIMARY KEY,
+                        guild_id BIGINT NOT NULL,
+                        swimlane_name TEXT NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE(guild_id, swimlane_name)
                     )
                 """)
                 
@@ -614,9 +657,10 @@ def health_check():
 def home():
     """Home route"""
     return jsonify({
-        'bot': 'Discord Bot',
+        'bot': 'Kronos Discord Bot',
         'status': 'running',
-        'bot_online': bot.is_ready()
+        'bot_online': bot.is_ready(),
+        'version': '2.0.0'
     }), 200
 
 bot.get_db_connection = get_db_connection
@@ -635,7 +679,7 @@ async def on_ready():
     setup_git_commands(bot, save_webhook_data, DEPLOYMENT_URL)
     setup_ai_commands(bot, OPENROUTER_API_KEY, OPENROUTER_URL, FREE_MODELS, DEFAULT_MODEL)
     
-    # List of cogs to load
+    # List of cogs to load (UPDATED WITH NEW COGS)
     cogs = [
         "commands.moderation",
         "commands.code_editor",
@@ -645,11 +689,21 @@ async def on_ready():
         "commands.celebration",
         "commands.productivity",
         "commands.report",
-        "commands.timetracking",
+        "commands.timetracking",  # FIXED VERSION
+        "commands.kanban",  # NEW KANBAN COG
         "commands.progress_tracking",
         "commands.gamification_XPsystem",
         "commands.collaboration_notification"
     ]
+    
+    # Load CustomHelp separately (no database dependency)
+    try:
+        # Create a simple CustomHelp without requiring get_db_connection
+        from commands.help_system import CustomHelp
+        await bot.add_cog(CustomHelp(bot))
+        print("✅ Loaded CustomHelp")
+    except Exception as e:
+        print(f"⚠️ Failed to load CustomHelp: {e}")
     
     # Load each cog with error handling
     for cog in cogs:
@@ -670,8 +724,8 @@ async def on_ready():
     
     await bot.change_presence(
         activity=discord.Activity(
-            type=discord.ActivityType.listening,
-            name="/help | AI + GitHub"
+            type=discord.ActivityType.watching,
+            name="your team's progress | /help"
         )
     )
 
@@ -767,4 +821,3 @@ if __name__ == "__main__":
     app.run(host="0.0.0.0", port=port, debug=False)
 else:
     start_bot()
-
