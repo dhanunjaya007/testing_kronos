@@ -74,17 +74,29 @@ class CodeEditor(commands.Cog):
     @commands.Cog.listener()
     async def on_presence_update(self, before: discord.Member, after: discord.Member):
         try:
+            logger.info(f"🔔 Presence update for {after.display_name} (ID: {after.id})")
+            logger.info(f"Activities: {[act.name if isinstance(act, discord.Activity) else str(act) for act in after.activities]}")
+            
             before_act = self._get_coding_activity(before.activities)
             after_act = self._get_coding_activity(after.activities)
+            
+            logger.info(f"Before activity: {before_act}")
+            logger.info(f"After activity: {after_act}")
+            
             if before_act is None and after_act is not None:
+                logger.info(f"✅ Starting coding session for {after.display_name}")
                 await self._start_coding_session(after.id, after_act)
             elif before_act is not None and after_act is None:
+                logger.info(f"⏹️ Ending coding session for {after.display_name}")
                 await self._end_coding_session(after.id)
             elif before_act and after_act and before_act != after_act:
+                logger.info(f"🔄 Switching coding activity for {after.display_name}")
                 await self._end_coding_session(after.id)
                 await self._start_coding_session(after.id, after_act)
         except Exception as e:
             logger.error(f"on_presence_update error: {e}")
+            import traceback
+            traceback.print_exc()
 
     def _extract_language(self, activity):
         details = (getattr(activity, "details", "") or "").lower()
@@ -102,9 +114,12 @@ class CodeEditor(commands.Cog):
     
     def _get_coding_activity(self, activities):
         for act in activities:
+            logger.debug(f"Checking activity: {act} (type: {type(act)}, name: {getattr(act, 'name', 'N/A')})")
             if isinstance(act, discord.Activity) and act.name in self.EDITORS:
+                logger.info(f"✅ Found coding activity: {act.name}")
                 lang = self._extract_language(act)
                 file = self._extract_filename(getattr(act, "details", "") or getattr(act, "state", ""))
+                logger.info(f"Detected language: {lang}, file: {file}")
                 return {
                     "editor": act.name,
                     "language": lang,
@@ -112,6 +127,7 @@ class CodeEditor(commands.Cog):
                     "details": getattr(act, "details", ""),
                     "state": getattr(act, "state", "")
                 }
+        logger.debug("No coding activity found")
         return None
 
     async def _start_coding_session(self, user_id, activity_info):
@@ -167,9 +183,11 @@ class CodeEditor(commands.Cog):
     @app_commands.command(name="code_status", description="View current coding status")
     @app_commands.describe(user="User to check (optional)")
     async def code_status(self, interaction: discord.Interaction, user: discord.Member = None):
+        logger.info(f"✅ code_status command invoked by {interaction.user.display_name}")
         try:
             target = user or interaction.user
             act = self._get_coding_activity(target.activities)
+            logger.info(f"Activity detected: {act}")
             embed = discord.Embed(
                 title=f"🖥️ Current Coding Status: {target.display_name}",
                 color=discord.Color.blue(),
@@ -437,6 +455,12 @@ async def setup(bot: commands.Bot):
     if not get_db_connection_func:
         logger.error("❌ get_db_connection not found on bot instance")
         return
-    await bot.add_cog(CodeEditor(bot, get_db_connection_func))
+    
+    # Create the cog instance
+    cog_instance = CodeEditor(bot, get_db_connection_func)
+    
+    # Add the cog to the bot
+    await bot.add_cog(cog_instance)
+    
     logger.info("✅ CodeEditor cog loaded successfully")
 
