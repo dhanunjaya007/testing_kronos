@@ -1,6 +1,7 @@
 import discord
 from discord import app_commands
 from discord.ext import commands
+from typing import Literal
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -65,7 +66,7 @@ class CodeEditor(commands.Cog):
                             );
                         """)
                         conn.commit()
-            logger.info("✅ DB tables initialized")
+            logger.info("✅ Code editor DB tables initialized")
         except Exception as e:
             logger.error(f"❌ DB table init failed: {e}")
 
@@ -93,10 +94,12 @@ class CodeEditor(commands.Cog):
             if any(p in text for p in patterns):
                 return lang
         return "unknown"
+    
     def _extract_filename(self, text):
         if not text: return None
         m = re.search(r"([a-zA-Z0-9_\-]+\.[a-zA-Z0-9]+)", text)
         return m.group(1) if m else None
+    
     def _get_coding_activity(self, activities):
         for act in activities:
             if isinstance(act, discord.Activity) and act.name in self.EDITORS:
@@ -126,6 +129,7 @@ class CodeEditor(commands.Cog):
                         conn.commit()
         except Exception as e:
             logger.error(f"Start session error: {e}")
+    
     async def _end_coding_session(self, user_id):
         try:
             with self.get_db_connection() as conn:
@@ -172,13 +176,14 @@ class CodeEditor(commands.Cog):
             )
             if act:
                 with self.get_db_connection() as conn:
-                    with conn.cursor() as cur:
-                        cur.execute("""
-                            SELECT start_time FROM coding_sessions
-                            WHERE user_id = %s AND end_time IS NULL
-                            ORDER BY start_time DESC LIMIT 1
-                        """, (target.id,))
-                        result = cur.fetchone()
+                    if conn:
+                        with conn.cursor() as cur:
+                            cur.execute("""
+                                SELECT start_time FROM coding_sessions
+                                WHERE user_id = %s AND end_time IS NULL
+                                ORDER BY start_time DESC LIMIT 1
+                            """, (target.id,))
+                            result = cur.fetchone()
                 start = result[0] if result else datetime.utcnow()
                 elapsed = int((datetime.utcnow() - start).total_seconds() // 60)
                 embed.description = (
@@ -198,29 +203,41 @@ class CodeEditor(commands.Cog):
     @app_commands.command(name="code_now", description="See who's currently coding")
     async def code_now(self, interaction: discord.Interaction):
         try:
+            await interaction.response.defer()  # Defer immediately since this might take time
+            
             lines = []
             for member in interaction.guild.members:
+                if member.bot:  # Skip bots
+                    continue
+                
                 act = self._get_coding_activity(member.activities)
                 if act:
                     with self.get_db_connection() as conn:
-                        with conn.cursor() as cur:
-                            cur.execute("""
-                                SELECT start_time FROM coding_sessions
-                                WHERE user_id = %s AND end_time IS NULL
-                                ORDER BY start_time DESC LIMIT 1
-                            """, (member.id,))
-                            result = cur.fetchone()
-                    elapsed = int((datetime.utcnow() - (result[0] or datetime.utcnow())).total_seconds() // 60)
+                        if conn:
+                            with conn.cursor() as cur:
+                                cur.execute("""
+                                    SELECT start_time FROM coding_sessions
+                                    WHERE user_id = %s AND end_time IS NULL
+                                    ORDER BY start_time DESC LIMIT 1
+                                """, (member.id,))
+                                result = cur.fetchone()
+                    elapsed = int((datetime.utcnow() - (result[0] if result else datetime.utcnow())).total_seconds() // 60)
                     lines.append(f"• **{member.display_name}** — {act['language']}, {elapsed}m")
+            
             embed = discord.Embed(
                 title="👨‍💻 Members Currently Coding",
                 description="\n".join(lines) if lines else "No one is currently coding",
                 color=discord.Color.green()
             )
-            await interaction.response.send_message(embed=embed)
+            await interaction.followup.send(embed=embed)
         except Exception as e:
             logger.error(f"code_now error: {e}")
-            await interaction.response.send_message("❌ Failed to fetch current coders.", ephemeral=True)
+            import traceback
+            traceback.print_exc()
+            try:
+                await interaction.followup.send("❌ Failed to fetch current coders. Make sure Presence Intent is enabled.", ephemeral=True)
+            except:
+                pass
     
     @app_commands.command(name="code_stats", description="View detailed coding statistics")
     @app_commands.describe(user="User to check (optional)")
@@ -228,13 +245,15 @@ class CodeEditor(commands.Cog):
         try:
             target = user or interaction.user
             with self.get_db_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute("""
-                        SELECT language, total_hours, session_count FROM coding_stats
-                        WHERE user_id = %s
-                        ORDER BY total_hours DESC
-                    """, (target.id,))
-                    stats = cur.fetchall()
+                if conn:
+                    with conn.cursor() as cur:
+                        cur.execute("""
+                            SELECT language, total_hours, session_count FROM coding_stats
+                            WHERE user_id = %s
+                            ORDER BY total_hours DESC
+                        """, (target.id,))
+                        stats = cur.fetchall()
+            
             embed = discord.Embed(
                 title=f"📊 Coding Stats: {target.display_name}",
                 color=discord.Color.purple(),
@@ -264,20 +283,22 @@ class CodeEditor(commands.Cog):
             target = user or interaction.user
             cutoff = datetime.utcnow().date()
             with self.get_db_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute("""
-                        SELECT start_time, language, duration_minutes FROM coding_sessions
-                        WHERE user_id = %s AND start_time > %s
-                        ORDER BY start_time DESC
-                    """, (target.id, cutoff))
-                    sessions = cur.fetchall()
+                if conn:
+                    with conn.cursor() as cur:
+                        cur.execute("""
+                            SELECT start_time, language, duration_minutes FROM coding_sessions
+                            WHERE user_id = %s AND start_time > %s
+                            ORDER BY start_time DESC
+                        """, (target.id, cutoff))
+                        sessions = cur.fetchall()
+            
             embed = discord.Embed(
                 title=f"📅 Recent Coding Sessions: {target.display_name}",
                 color=discord.Color.green(),
                 description=f"Showing last {days} days of sessions."
             )
             if sessions:
-                for sess in sessions:
+                for sess in sessions[:10]:  # Limit to 10
                     stime, lang, dur = sess
                     day = stime.strftime("%Y-%m-%d")
                     embed.add_field(
@@ -298,12 +319,14 @@ class CodeEditor(commands.Cog):
         try:
             target = user or interaction.user
             with self.get_db_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute("""
-                        SELECT language, total_hours FROM coding_stats
-                        WHERE user_id = %s ORDER BY total_hours DESC
-                    """, (target.id,))
-                    langs = cur.fetchall()
+                if conn:
+                    with conn.cursor() as cur:
+                        cur.execute("""
+                            SELECT language, total_hours FROM coding_stats
+                            WHERE user_id = %s ORDER BY total_hours DESC
+                        """, (target.id,))
+                        langs = cur.fetchall()
+            
             embed = discord.Embed(
                 title=f"🈯 Language Breakdown: {target.display_name}",
                 description="Your top languages:",
@@ -319,158 +342,8 @@ class CodeEditor(commands.Cog):
             logger.error(f"code_languages error: {e}")
             await interaction.response.send_message("❌ Failed to fetch languages.", ephemeral=True)
     
-    @app_commands.command(name="code_history", description="View detailed coding history")
-    @app_commands.describe(user="User to check (optional)", days="Number of days to show (default: 7)")
-    async def code_history(self, interaction: discord.Interaction, user: discord.Member = None, days: int = 7):
-        try:
-            days = min(max(1, days), 30)
-            target = user or interaction.user
-            cutoff = datetime.utcnow().date()
-            with self.get_db_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute("""
-                        SELECT start_time, language, duration_minutes FROM coding_sessions
-                        WHERE user_id = %s AND start_time > %s
-                        ORDER BY start_time DESC
-                    """, (target.id, cutoff))
-                    history = cur.fetchall()
-            embed = discord.Embed(
-                title=f"🕓 Coding History: {target.display_name}",
-                color=discord.Color.blurple(),
-            )
-            if history:
-                head = "`Date      Lang      Duration`"
-                lines = "\n".join([
-                    f"`{h[0].strftime('%Y-%m-%d')} {h[1]:<10} {h[2]//60}h{h[2]%60}m`"
-                    for h in history
-                ])
-                embed.description = f"{head}\n{lines}\n*(Last {days} days)*"
-            else:
-                embed.description = "No history in selected period!"
-            await interaction.response.send_message(embed=embed)
-        except Exception as e:
-            logger.error(f"code_history error: {e}")
-            await interaction.response.send_message("❌ Failed to fetch history.", ephemeral=True)
-
-    @app_commands.command(name="code_analytics", description="Advanced analytics dashboard")
-    @app_commands.describe(period="Time period (weekly/monthly)")
-    async def code_analytics(self, interaction: discord.Interaction, period: str = "weekly"):
-        await interaction.response.defer()
-        try:
-            period = "weekly" if period not in {"weekly", "monthly"} else period
-            target = interaction.user
-            with self.get_db_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute("""
-                        SELECT language, total_hours FROM coding_stats
-                        WHERE user_id = %s
-                    """, (target.id,))
-                    stats = {l: float(h) for l, h in cur.fetchall()}
-            if not stats:
-                await interaction.followup.send("No analytics data available.", ephemeral=True)
-                return
-            fig, ax = plt.subplots(figsize=(8, 6))
-            ax.pie(stats.values(), labels=stats.keys(), autopct='%1.1f%%', startangle=90)
-            ax.set_title(f"Coding Analytics ({period.title()})")
-            buf = io.BytesIO()
-            plt.savefig(buf, format="png", dpi=100, bbox_inches="tight")
-            buf.seek(0)
-            plt.close(fig)
-            f = discord.File(buf, filename="analytics.png")
-            embed = discord.Embed(
-                title=f"📈 {period.title()} Analytics",
-                color=discord.Color.teal(),
-                description="Pie chart shows your coding time by language."
-            )
-            embed.set_image(url="attachment://analytics.png")
-            await interaction.followup.send(embed=embed, file=f)
-        except Exception as e:
-            logger.error(f"code_analytics error: {e}")
-            await interaction.followup.send("❌ Error generating chart. Please try again.", ephemeral=True)
-
-    @app_commands.command(name="code_compare", description="Compare two users' coding stats")
-    @app_commands.describe(user1="First user to compare", user2="Second user to compare")
-    async def code_compare(self, interaction: discord.Interaction, user1: discord.Member, user2: discord.Member):
-        try:
-            stats = {}
-            with self.get_db_connection() as conn:
-                with conn.cursor() as cur:
-                    for u in (user1, user2):
-                        cur.execute("""
-                            SELECT language, total_hours FROM coding_stats
-                            WHERE user_id = %s
-                        """, (u.id,))
-                        stats[u] = cur.fetchall()
-            def summary(stat):
-                total = sum(h for l, h in stat)
-                top = max(stat, key=lambda s: s[1], default=("None", 0))
-                return f"Total: {total:.1f}h\n{top[0].capitalize()}: {top[1]:.1f}h"
-            embed = discord.Embed(
-                title="⚡ Compare Coding Stats",
-                color=discord.Color.purple()
-            )
-            embed.add_field(name=f"{user1.display_name}", value=summary(stats[user1]), inline=True)
-            embed.add_field(name=f"{user2.display_name}", value=summary(stats[user2]), inline=True)
-            embed.set_footer(text="Comparison of total and top language hours.")
-            await interaction.response.send_message(embed=embed)
-        except Exception as e:
-            logger.error(f"code_compare error: {e}")
-            await interaction.response.send_message("❌ Failed to compare stats.", ephemeral=True)
-
-    @app_commands.command(name="code_chart", description="Generate visual charts")
-    @app_commands.describe(chart_type="Type of chart (bar/pie)")
-    async def code_chart(self, interaction: discord.Interaction, chart_type: str = "bar"):
-        await interaction.response.defer()
-        try:
-            chart_type = chart_type if chart_type in ("bar", "pie") else "bar"
-            target = interaction.user
-            with self.get_db_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute("""
-                        SELECT language, total_hours FROM coding_stats
-                        WHERE user_id = %s
-                    """, (target.id,))
-                    stats = list(cur.fetchall())
-            if not stats:
-                await interaction.followup.send("No chart data available.", ephemeral=True)
-                return
-            langs = [l for l, h in stats]
-            hours = [float(h) for l, h in stats]
-            fig, ax = plt.subplots(figsize=(10, 6))
-            if chart_type == "pie":
-                ax.pie(hours, labels=langs, autopct="%1.1f%%", startangle=90)
-                ax.set_title('Coding Time Distribution')
-            else:
-                ax.bar(langs, hours, color=['#3572A5', '#F1E05A', '#E44D26'][:len(langs)])
-                ax.set_ylabel('Hours')
-                ax.set_title(f'Coding Time by Language')
-                ax.grid(axis="y", alpha=0.3)
-            buf = io.BytesIO()
-            plt.savefig(buf, format="png", dpi=100, bbox_inches="tight")
-            buf.seek(0)
-            plt.close(fig)
-            file = discord.File(buf, filename="codechart.png")
-            embed = discord.Embed(
-                title="🖼️ Visual Coding Chart",
-                color=discord.Color.blurple(),
-                description=f"Generated a {chart_type.lower()} chart for your stats."
-            )
-            embed.set_image(url="attachment://codechart.png")
-            await interaction.followup.send(embed=embed, file=file)
-        except Exception as e:
-            logger.error(f"code_chart error: {e}")
-            await interaction.followup.send("❌ Error generating chart. Please try again.", ephemeral=True)
+    # ===== EDITOR SETUP COMMANDS =====
     
-    from discord import app_commands
-import discord
-from discord.ext import commands
-import logging
-
-logger = logging.getLogger(__name__)
-
-class CodeEditor(commands.Cog):  # (other logic omitted here for brevity)
-
-    # ----- UNIVERSAL RICH PRESENCE STEPS -----
     @staticmethod
     def rich_presence_steps(editor_tip):
         return (
@@ -480,7 +353,7 @@ class CodeEditor(commands.Cog):  # (other logic omitted here for brevity)
             "👉 [Download Discord](https://discord.com/download) (must be running on your computer)\n\n"
             "### Step 3️⃣: Enable Discord Rich Presence\n"
             "• Open Discord desktop, go to **Settings → Activity Privacy**\n"
-            "• Toggle **“Display current activity as a status message”** to ON.\n"
+            "• Toggle **"Display current activity as a status message"** to ON.\n"
             "• Ensure **Privacy settings** allow this activity tracking.\n\n"
             "_Once finished, restart Discord & your code editor!_"
         )
@@ -509,18 +382,14 @@ class CodeEditor(commands.Cog):  # (other logic omitted here for brevity)
 
     @app_commands.command(name="setup_vscode", description="VS Code extension setup guide")
     async def setup_vscode(self, interaction: discord.Interaction):
-        tip = (
-            "Search `Discord Presence` by iCrawl in the **VS Code Extensions** tab. Install and reload VS Code."
-        )
+        tip = "Search `Discord Presence` by iCrawl in the **VS Code Extensions** tab. Install and reload VS Code."
         embed = discord.Embed(title="🟦 VS Code Full Setup", color=discord.Color.blue())
         embed.description = self.rich_presence_steps(tip)
         await interaction.response.send_message(embed=embed)
 
     @app_commands.command(name="setup_pycharm", description="PyCharm plugin setup guide")
     async def setup_pycharm(self, interaction: discord.Interaction):
-        tip = (
-            "In PyCharm, go to `Preferences → Plugins` and search for `Discord Integration`. Install & restart PyCharm."
-        )
+        tip = "In PyCharm, go to `Preferences → Plugins` and search for `Discord Integration`. Install & restart PyCharm."
         embed = discord.Embed(title="🐍 PyCharm Full Setup", color=discord.Color.green())
         embed.description = self.rich_presence_steps(tip)
         await interaction.response.send_message(embed=embed)
@@ -534,91 +403,30 @@ class CodeEditor(commands.Cog):  # (other logic omitted here for brevity)
 
     @app_commands.command(name="setup_webstorm", description="WebStorm plugin setup guide")
     async def setup_webstorm(self, interaction: discord.Interaction):
-        tip = (
-            "Open WebStorm, go to `Preferences → Plugins` and install `Discord Integration` for Rich Presence support."
-        )
+        tip = "Open WebStorm, go to `Preferences → Plugins` and install `Discord Integration` for Rich Presence support."
         embed = discord.Embed(title="🌐 WebStorm Full Setup", color=discord.Color.teal())
         embed.description = self.rich_presence_steps(tip)
         await interaction.response.send_message(embed=embed)
 
     @app_commands.command(name="setup_atom", description="Atom package setup guide")
     async def setup_atom(self, interaction: discord.Interaction):
-        tip = (
-            "Open a terminal and run `apm install atom-discord` to add Discord Presence for Atom."
-        )
+        tip = "Open a terminal and run `apm install atom-discord` to add Discord Presence for Atom."
         embed = discord.Embed(title="🅰️ Atom Full Setup", color=discord.Color.dark_red())
         embed.description = self.rich_presence_steps(tip)
         await interaction.response.send_message(embed=embed)
 
     @app_commands.command(name="setup_sublime", description="Sublime Text plugin setup guide")
     async def setup_sublime(self, interaction: discord.Interaction):
-        tip = (
-            "Install `Discord Rich Presence` via **Package Control** in Sublime Text."
-        )
+        tip = "Install `Discord Rich Presence` via **Package Control** in Sublime Text."
         embed = discord.Embed(title="📰 Sublime Text Full Setup", color=discord.Color.dark_magenta())
         embed.description = self.rich_presence_steps(tip)
         await interaction.response.send_message(embed=embed)
 
     @app_commands.command(name="setup_vim", description="Vim/Neovim plugin setup guide")
     async def setup_vim(self, interaction: discord.Interaction):
-        tip = (
-            "Install [`presence.nvim`](https://github.com/andweeb/presence.nvim) using your plugin manager."
-        )
+        tip = "Install [`presence.nvim`](https://github.com/andweeb/presence.nvim) using your plugin manager."
         embed = discord.Embed(title="🟩 Vim/Neovim Full Setup", color=discord.Color.green())
         embed.description = self.rich_presence_steps(tip)
-        await interaction.response.send_message(embed=embed)
-
-    # Verification, test, troubleshooting, team, and hackathon commands can be kept unchanged,
-    # or updated similarly if you want to standardize their style.
-
-    @app_commands.command(name="setup_verify", description="Verify your complete setup")
-    async def setup_verify(self, interaction: discord.Interaction):
-        embed = discord.Embed(
-            title="🔎 Setup Verification",
-            color=discord.Color.blurple(),
-            description="Checking editor integration and Rich Presence settings..."
-        )
-        await interaction.response.send_message(embed=embed)
-
-    @app_commands.command(name="setup_test", description="Test Rich Presence connection")
-    async def setup_test(self, interaction: discord.Interaction):
-        embed = discord.Embed(
-            title="🧪 Rich Presence Test",
-            color=discord.Color.green(),
-            description="Open your editor and ensure Discord shows your activity as Rich Presence."
-        )
-        await interaction.response.send_message(embed=embed)
-
-    @app_commands.command(name="setup_troubleshoot", description="Common setup issues guide")
-    async def setup_troubleshoot(self, interaction: discord.Interaction):
-        embed = discord.Embed(
-            title="🛠️ Troubleshooting Setup",
-            color=discord.Color.red(),
-            description=(
-                "- Make sure Discord desktop is running\n"
-                "- Verify Activity Privacy in Discord settings\n"
-                "- Restart both Discord and your editor\n"
-                "- Use the recommended extension/plugin for your editor"
-            )
-        )
-        await interaction.response.send_message(embed=embed)
-
-    @app_commands.command(name="setup_team", description="Setup guide for team leads")
-    async def setup_team(self, interaction: discord.Interaction):
-        embed = discord.Embed(
-            title="🤝 Team Lead Setup Guide",
-            color=discord.Color.gold(),
-            description="Have team members run `/setup_editor` and `/setup_verify`.\nCreate a #coding channel for leaderboard and stats."
-        )
-        await interaction.response.send_message(embed=embed)
-
-    @app_commands.command(name="setup_hackathon", description="Fast setup for hackathons")
-    async def setup_hackathon(self, interaction: discord.Interaction):
-        embed = discord.Embed(
-            title="🏁 Hackathon Fast Setup",
-            color=discord.Color.blurple(),
-            description="Install your editor plugin, enable Discord Rich Presence, verify with `/setup_verify`."
-        )
         await interaction.response.send_message(embed=embed)
 
 
