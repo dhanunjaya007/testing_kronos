@@ -80,7 +80,7 @@ class Celebration(commands.Cog):
         type="Type of celebration"
     )
     async def celebrate(self, ctx: commands.Context, user: discord.Member, 
-                      reason: str = "Great work!", *, 
+                      reason: str = "Great work!", 
                       type: Literal["achievement", "milestone", "birthday", "anniversary", "other"] = "achievement"):
         """Celebrate a team member"""
         try:
@@ -97,16 +97,25 @@ class Celebration(commands.Cog):
                             VALUES (%s, %s, %s, %s, %s, %s)
                         """, (ctx.author.id, user.id, ctx.guild.id, ctx.channel.id, reason, type))
                         
-                        # Update morale stats
+                        # Update morale stats for receiver
                         cur.execute("""
-                            INSERT INTO morale_stats (guild_id, user_id, celebrations_received, celebrations_given)
-                            VALUES (%s, %s, 1, 1)
+                            INSERT INTO morale_stats (guild_id, user_id, celebrations_received)
+                            VALUES (%s, %s, 1)
                             ON CONFLICT (guild_id, user_id) 
                             DO UPDATE SET 
                                 celebrations_received = morale_stats.celebrations_received + 1,
+                                last_updated = CURRENT_TIMESTAMP
+                        """, (ctx.guild.id, user.id))
+                        
+                        # Update morale stats for giver
+                        cur.execute("""
+                            INSERT INTO morale_stats (guild_id, user_id, celebrations_given)
+                            VALUES (%s, %s, 1)
+                            ON CONFLICT (guild_id, user_id) 
+                            DO UPDATE SET 
                                 celebrations_given = morale_stats.celebrations_given + 1,
                                 last_updated = CURRENT_TIMESTAMP
-                        """, (ctx.guild.id, user.id, ctx.guild.id, ctx.author.id))
+                        """, (ctx.guild.id, ctx.author.id))
                         
                         conn.commit()
                     
@@ -168,16 +177,25 @@ class Celebration(commands.Cog):
                             VALUES (%s, %s, %s, %s, %s)
                         """, (ctx.author.id, user.id, ctx.guild.id, ctx.channel.id, message))
                         
-                        # Update morale stats
+                        # Update morale stats for receiver
                         cur.execute("""
-                            INSERT INTO morale_stats (guild_id, user_id, shoutouts_received, shoutouts_given)
-                            VALUES (%s, %s, 1, 1)
+                            INSERT INTO morale_stats (guild_id, user_id, shoutouts_received)
+                            VALUES (%s, %s, 1)
                             ON CONFLICT (guild_id, user_id) 
                             DO UPDATE SET 
                                 shoutouts_received = morale_stats.shoutouts_received + 1,
+                                last_updated = CURRENT_TIMESTAMP
+                        """, (ctx.guild.id, user.id))
+                        
+                        # Update morale stats for giver
+                        cur.execute("""
+                            INSERT INTO morale_stats (guild_id, user_id, shoutouts_given)
+                            VALUES (%s, %s, 1)
+                            ON CONFLICT (guild_id, user_id) 
+                            DO UPDATE SET 
                                 shoutouts_given = morale_stats.shoutouts_given + 1,
                                 last_updated = CURRENT_TIMESTAMP
-                        """, (ctx.guild.id, user.id, ctx.guild.id, ctx.author.id))
+                        """, (ctx.guild.id, ctx.author.id))
                         
                         conn.commit()
                     
