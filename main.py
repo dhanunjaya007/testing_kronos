@@ -61,6 +61,404 @@ DEPLOYMENT_URL = os.getenv('DEPLOYMENT_URL', 'https://testing-kronos.onrender.co
 # ============= DATABASE CONNECTION POOL =============
 connection_pool = None
 
+def init_all_database_tables():
+    """Initialize ALL database tables automatically"""
+    logger.info("🔧 Initializing database tables...")
+    
+    try:
+        with get_db_connection() as conn:
+            if not conn:
+                logger.warning("⚠️ No database connection, skipping table creation")
+                return False
+                
+            with conn.cursor() as cur:
+                # Webhook data
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS webhook_data (
+                        token VARCHAR(255) PRIMARY KEY,
+                        guild_id BIGINT NOT NULL,
+                        webhook_url TEXT NOT NULL,
+                        webhook_id BIGINT NOT NULL,
+                        webhook_token TEXT NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                
+                # Coding sessions
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS coding_sessions (
+                        id SERIAL PRIMARY KEY,
+                        user_id BIGINT NOT NULL,
+                        language TEXT NOT NULL,
+                        editor TEXT,
+                        file_name TEXT,
+                        start_time TIMESTAMP NOT NULL,
+                        end_time TIMESTAMP,
+                        duration_minutes INT,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                
+                # Coding stats
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS coding_stats (
+                        id SERIAL PRIMARY KEY,
+                        user_id BIGINT NOT NULL,
+                        language TEXT NOT NULL,
+                        total_hours DECIMAL(10,2) DEFAULT 0,
+                        session_count INT DEFAULT 0,
+                        last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE(user_id, language)
+                    )
+                """)
+                
+                # Reminders
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS reminders (
+                        id SERIAL PRIMARY KEY,
+                        reminder_id TEXT NOT NULL UNIQUE,
+                        user_id BIGINT NOT NULL,
+                        channel_id BIGINT NOT NULL,
+                        target_user_id BIGINT,
+                        message TEXT NOT NULL,
+                        trigger_time TIMESTAMP NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        recurring BOOLEAN DEFAULT FALSE,
+                        frequency TEXT,
+                        next_trigger TIMESTAMP
+                    )
+                """)
+                
+                # Meetings
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS meetings (
+                        id SERIAL PRIMARY KEY,
+                        meeting_id TEXT NOT NULL UNIQUE,
+                        title TEXT NOT NULL,
+                        date DATE NOT NULL,
+                        time TIME NOT NULL,
+                        agenda TEXT,
+                        notes TEXT,
+                        creator_id BIGINT NOT NULL,
+                        channel_id BIGINT,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                
+                # Meeting RSVP
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS meeting_rsvp (
+                        id SERIAL PRIMARY KEY,
+                        meeting_id TEXT NOT NULL,
+                        user_id BIGINT NOT NULL,
+                        rsvp TEXT CHECK (rsvp IN ('yes','no','maybe')),
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE(meeting_id, user_id)
+                    )
+                """)
+                
+                # Events
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS events (
+                        id SERIAL PRIMARY KEY,
+                        event_id TEXT NOT NULL UNIQUE,
+                        title TEXT NOT NULL,
+                        date DATE NOT NULL,
+                        description TEXT,
+                        creator_id BIGINT NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                
+                # Team tasks
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS team_tasks (
+                        id SERIAL PRIMARY KEY,
+                        task_id TEXT NOT NULL UNIQUE,
+                        title TEXT NOT NULL,
+                        description TEXT,
+                        assignee_id BIGINT,
+                        creator_id BIGINT NOT NULL,
+                        guild_id BIGINT NOT NULL,
+                        deadline DATE,
+                        priority TEXT CHECK (priority IN ('low', 'medium', 'high', 'urgent')),
+                        status TEXT CHECK (status IN ('To Do', 'In Progress', 'Review', 'Done')),
+                        dependency_task_id TEXT,
+                        blocked BOOLEAN DEFAULT FALSE,
+                        block_reason TEXT,
+                        estimated_hours DECIMAL(5,2) DEFAULT 0,
+                        time_logged DECIMAL(5,2) DEFAULT 0,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                
+                # Personal tasks
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS personal_tasks (
+                        id SERIAL PRIMARY KEY,
+                        task_id TEXT NOT NULL UNIQUE,
+                        user_id BIGINT NOT NULL,
+                        title TEXT NOT NULL,
+                        description TEXT,
+                        deadline DATE,
+                        status TEXT CHECK (status IN ('Pending', 'In Progress', 'Completed')),
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                
+                # Milestones
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS milestones (
+                        id SERIAL PRIMARY KEY,
+                        milestone_id TEXT NOT NULL UNIQUE,
+                        title TEXT NOT NULL,
+                        description TEXT,
+                        deadline DATE,
+                        status TEXT CHECK (status IN ('Active', 'Completed', 'Cancelled')),
+                        progress INTEGER DEFAULT 0 CHECK (progress >= 0 AND progress <= 100),
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                
+                # Celebrations
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS celebrations (
+                        id SERIAL PRIMARY KEY,
+                        celebrator_id BIGINT NOT NULL,
+                        celebrated_id BIGINT NOT NULL,
+                        guild_id BIGINT NOT NULL,
+                        channel_id BIGINT NOT NULL,
+                        reason TEXT,
+                        celebration_type TEXT CHECK (celebration_type IN ('achievement', 'milestone', 'birthday', 'anniversary', 'other')),
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                
+                # Shoutouts
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS shoutouts (
+                        id SERIAL PRIMARY KEY,
+                        giver_id BIGINT NOT NULL,
+                        receiver_id BIGINT NOT NULL,
+                        guild_id BIGINT NOT NULL,
+                        channel_id BIGINT NOT NULL,
+                        message TEXT NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                
+                # Morale stats
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS morale_stats (
+                        id SERIAL PRIMARY KEY,
+                        guild_id BIGINT NOT NULL,
+                        user_id BIGINT NOT NULL,
+                        celebrations_received INT DEFAULT 0,
+                        shoutouts_received INT DEFAULT 0,
+                        celebrations_given INT DEFAULT 0,
+                        shoutouts_given INT DEFAULT 0,
+                        last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE(guild_id, user_id)
+                    )
+                """)
+                
+                # Focus sessions
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS focus_sessions (
+                        id SERIAL PRIMARY KEY,
+                        session_id TEXT NOT NULL UNIQUE,
+                        user_id BIGINT NOT NULL,
+                        guild_id BIGINT NOT NULL,
+                        channel_id BIGINT NOT NULL,
+                        start_time TIMESTAMP NOT NULL,
+                        end_time TIMESTAMP,
+                        duration_minutes INT,
+                        focus_type TEXT DEFAULT 'focus',
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                
+                # Pomodoro sessions
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS pomodoro_sessions (
+                        id SERIAL PRIMARY KEY,
+                        session_id TEXT NOT NULL UNIQUE,
+                        user_id BIGINT NOT NULL,
+                        guild_id BIGINT NOT NULL,
+                        channel_id BIGINT NOT NULL,
+                        start_time TIMESTAMP NOT NULL,
+                        end_time TIMESTAMP,
+                        duration_minutes INT DEFAULT 25,
+                        break_duration INT DEFAULT 5,
+                        completed_pomodoros INT DEFAULT 0,
+                        is_break BOOLEAN DEFAULT FALSE,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                
+                # DND status
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS dnd_status (
+                        id SERIAL PRIMARY KEY,
+                        user_id BIGINT NOT NULL,
+                        guild_id BIGINT NOT NULL,
+                        start_time TIMESTAMP NOT NULL,
+                        end_time TIMESTAMP,
+                        duration_minutes INT,
+                        reason TEXT,
+                        active BOOLEAN DEFAULT TRUE,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                
+                # Productivity stats
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS productivity_stats (
+                        id SERIAL PRIMARY KEY,
+                        user_id BIGINT NOT NULL,
+                        guild_id BIGINT NOT NULL,
+                        total_focus_minutes INT DEFAULT 0,
+                        total_pomodoros INT DEFAULT 0,
+                        total_dnd_minutes INT DEFAULT 0,
+                        focus_sessions_count INT DEFAULT 0,
+                        last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE(user_id, guild_id)
+                    )
+                """)
+                
+                # Report schedules
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS report_schedules (
+                        id SERIAL PRIMARY KEY,
+                        guild_id BIGINT NOT NULL,
+                        channel_id BIGINT NOT NULL,
+                        frequency TEXT CHECK (frequency IN ('daily', 'weekly')) NOT NULL,
+                        last_sent TIMESTAMP,
+                        is_active BOOLEAN DEFAULT TRUE,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE(guild_id, channel_id, frequency)
+                    )
+                """)
+                
+                # Blockers
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS blockers (
+                        id SERIAL PRIMARY KEY,
+                        blocker_id TEXT NOT NULL UNIQUE,
+                        description TEXT NOT NULL,
+                        resolved BOOLEAN DEFAULT FALSE,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                
+                # User XP levels
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS user_xp_levels (
+                        id SERIAL PRIMARY KEY,
+                        user_id BIGINT NOT NULL,
+                        guild_id BIGINT NOT NULL,
+                        xp INT DEFAULT 0,
+                        level INT DEFAULT 1,
+                        last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE(user_id, guild_id)
+                    )
+                """)
+                
+                # User badges
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS user_badges (
+                        id SERIAL PRIMARY KEY,
+                        user_id BIGINT NOT NULL,
+                        guild_id BIGINT NOT NULL,
+                        badge_name TEXT NOT NULL,
+                        date_earned TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                
+                # Challenges
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS challenges (
+                        id SERIAL PRIMARY KEY,
+                        challenge_id TEXT NOT NULL UNIQUE,
+                        title TEXT NOT NULL,
+                        description TEXT,
+                        xp_reward INT DEFAULT 0,
+                        guild_id BIGINT NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                
+                # Completed challenges
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS completed_challenges (
+                        id SERIAL PRIMARY KEY,
+                        user_id BIGINT NOT NULL,
+                        challenge_id TEXT NOT NULL,
+                        guild_id BIGINT NOT NULL,
+                        completed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE(user_id, challenge_id, guild_id)
+                    )
+                """)
+                
+                # User streaks
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS user_streaks (
+                        id SERIAL PRIMARY KEY,
+                        user_id BIGINT NOT NULL,
+                        guild_id BIGINT NOT NULL,
+                        current_streak INT DEFAULT 0,
+                        longest_streak INT DEFAULT 0,
+                        last_activity TIMESTAMP,
+                        UNIQUE(user_id, guild_id)
+                    )
+                """)
+                
+                # User kudos
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS user_kudos (
+                        id SERIAL PRIMARY KEY,
+                        user_id BIGINT NOT NULL,
+                        guild_id BIGINT NOT NULL,
+                        kudos INT DEFAULT 0,
+                        UNIQUE(user_id, guild_id)
+                    )
+                """)
+                
+                # Standup responses
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS standup_responses (
+                        id SERIAL PRIMARY KEY,
+                        user_id BIGINT NOT NULL,
+                        guild_id BIGINT NOT NULL,
+                        yesterday TEXT,
+                        today TEXT,
+                        blockers TEXT,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                
+                # User status
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS user_status (
+                        id SERIAL PRIMARY KEY,
+                        user_id BIGINT NOT NULL,
+                        guild_id BIGINT NOT NULL,
+                        status_message TEXT,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE(user_id, guild_id)
+                    )
+                """)
+                
+                conn.commit()
+                logger.info("✅ All database tables initialized successfully!")
+                return True
+                
+    except Exception as e:
+        logger.error(f"❌ Failed to initialize database tables: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
 def init_db_pool():
     """Initialize PostgreSQL connection pool"""
     global connection_pool
@@ -80,22 +478,8 @@ def init_db_pool():
             
             logger.info("✅ PostgreSQL connection pool initialized")
             
-            # Initialize webhook table
-            with get_db_connection() as conn:
-                if conn:
-                    with conn.cursor() as cur:
-                        cur.execute("""
-                            CREATE TABLE IF NOT EXISTS webhook_data (
-                                token VARCHAR(255) PRIMARY KEY,
-                                guild_id BIGINT NOT NULL,
-                                webhook_url TEXT NOT NULL,
-                                webhook_id BIGINT NOT NULL,
-                                webhook_token TEXT NOT NULL,
-                                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                            )
-                        """)
-                        conn.commit()
-                        logger.info("✅ Webhook table initialized")
+            # Automatically initialize all tables
+            init_all_database_tables()
             
             return connection_pool
         except Exception as e:
