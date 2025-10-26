@@ -365,7 +365,36 @@ async def on_ready():
     except Exception as e:
         print(f"Meeting cog error: {e}")
         import traceback; traceback.print_exc()
+        try:
+        await bot.load_extension("commands.meeting")
+        print("Meeting commands loaded")
+    except Exception as e:
+        print(f"Meeting cog error: {e}")
+        import traceback; traceback.print_exc()
 
+    
+    # Sync slash commands with Discord
+
+->
+
+    try:
+        await bot.load_extension("commands.meeting")
+        print("Meeting commands loaded")
+    except Exception as e:
+        print(f"Meeting cog error: {e}")
+        import traceback; traceback.print_exc()
+    
+    # Load task_milestone cog
+    try:
+        await bot.load_extension("commands.task_milestone")
+        print("✅ Task/Milestone commands loaded")
+    except Exception as e:
+        print(f"⚠️ Task/Milestone cog error: {e}")
+        import traceback
+        traceback.print_exc()
+
+    
+    # Sync slash commands with Discord
     
     # Sync slash commands with Discord
     print("🔄 Syncing slash commands with Discord...")
@@ -517,6 +546,7 @@ start_bot()
 if __name__ == "__main__":
     print("🌐 Starting Flask...")
     app.run(host="0.0.0.0", port=port, debug=False)
+
 
 
 
