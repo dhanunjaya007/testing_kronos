@@ -281,7 +281,7 @@ class CodeEditor(commands.Cog):
         try:
             days = min(max(1, days), 30)
             target = user or interaction.user
-            cutoff = datetime.utcnow().date()
+            cutoff = datetime.utcnow() - timedelta(days=days)
             with self.get_db_connection() as conn:
                 if conn:
                     with conn.cursor() as cur:
@@ -437,4 +437,3 @@ async def setup(bot: commands.Bot):
         return
     await bot.add_cog(CodeEditor(bot, get_db_connection_func))
     logger.info("✅ CodeEditor cog loaded successfully")
-
