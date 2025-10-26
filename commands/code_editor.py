@@ -344,6 +344,7 @@ class CodeEditor(commands.Cog):
     
     # ===== EDITOR SETUP COMMANDS =====
     
+    
     @staticmethod
     def rich_presence_steps(editor_tip):
         return (
@@ -353,10 +354,11 @@ class CodeEditor(commands.Cog):
             "👉 [Download Discord](https://discord.com/download) (must be running on your computer)\n\n"
             "### Step 3️⃣: Enable Discord Rich Presence\n"
             "• Open Discord desktop, go to **Settings → Activity Privacy**\n"
-            "• Toggle **"Display current activity as a status message"** to ON.\n"
+            '• Toggle **"Display current activity as a status message"** to ON.\n'
             "• Ensure **Privacy settings** allow this activity tracking.\n\n"
             "_Once finished, restart Discord & your code editor!_"
         )
+
 
     @app_commands.command(name="setup_editor", description="Interactive editor selection guide")
     async def setup_editor(self, interaction: discord.Interaction):
@@ -437,3 +439,4 @@ async def setup(bot: commands.Bot):
         return
     await bot.add_cog(CodeEditor(bot, get_db_connection_func))
     logger.info("✅ CodeEditor cog loaded successfully")
+
