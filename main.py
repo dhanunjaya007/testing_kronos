@@ -679,7 +679,7 @@ async def on_ready():
     setup_git_commands(bot, save_webhook_data, DEPLOYMENT_URL)
     setup_ai_commands(bot, OPENROUTER_API_KEY, OPENROUTER_URL, FREE_MODELS, DEFAULT_MODEL)
     
-    # List of cogs to load (UPDATED WITH NEW COGS)
+    # List of cogs to load (UPDATED - REMOVED timetracking and report)
     cogs = [
         "commands.moderation",
         "commands.code_editor",
@@ -688,9 +688,7 @@ async def on_ready():
         "commands.task_milestone",
         "commands.celebration",
         "commands.productivity",
-        "commands.report",
-        "commands.timetracking",  # FIXED VERSION
-        "commands.kanban",  # NEW KANBAN COG
+        "commands.kanban",  # FIXED KANBAN COG
         "commands.progress_tracking",
         "commands.gamification_XPsystem",
         "commands.collaboration_notification"
@@ -698,12 +696,11 @@ async def on_ready():
     
     # Load CustomHelp separately (no database dependency)
     try:
-        # Create a simple CustomHelp without requiring get_db_connection
         from commands.help_system import CustomHelp
         await bot.add_cog(CustomHelp(bot))
         print("✅ Loaded CustomHelp")
     except Exception as e:
-        print(f"⚠️ Failed to load CustomHelp: {e}")
+        print(f"⚠ Failed to load CustomHelp: {e}")
     
     # Load each cog with error handling
     for cog in cogs:
@@ -711,7 +708,7 @@ async def on_ready():
             await bot.load_extension(cog)
             print(f"✅ Loaded {cog}")
         except Exception as e:
-            print(f"⚠️ Failed to load {cog}: {e}")
+            print(f"⚠ Failed to load {cog}: {e}")
             import traceback
             traceback.print_exc()
     
@@ -728,7 +725,6 @@ async def on_ready():
             name="your team's progress | /help"
         )
     )
-
 @bot.event
 async def on_guild_join(guild):
     """When bot joins a server"""
@@ -821,3 +817,4 @@ if __name__ == "__main__":
     app.run(host="0.0.0.0", port=port, debug=False)
 else:
     start_bot()
+
