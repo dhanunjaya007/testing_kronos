@@ -9,6 +9,9 @@ logger = logging.getLogger(__name__)
 # Store conversation history per user
 conversation_history = {}
 
+# Store user's preferred model (user_id: model_name)
+user_models = {}
+
 # ============= AI HELPER FUNCTIONS =============
 
 def chat_with_openrouter(prompt, model=None, user_id=None, OPENROUTER_API_KEY=None, 
@@ -17,6 +20,10 @@ def chat_with_openrouter(prompt, model=None, user_id=None, OPENROUTER_API_KEY=No
     if not OPENROUTER_API_KEY:
         return "❌ API key not set. Get one at: https://openrouter.ai/keys"
 
+    # Use user's preferred model if set, otherwise use specified or default
+    if user_id and user_id in user_models:
+        model = user_models[user_id]
+    
     model_id = FREE_MODELS.get(model or DEFAULT_MODEL, FREE_MODELS["llama"])
 
     headers = {
@@ -104,17 +111,93 @@ def setup_ai_commands(bot, OPENROUTER_API_KEY, OPENROUTER_URL, FREE_MODELS, DEFA
     @bot.hybrid_command(name="models", description="List available AI models")
     async def models(ctx: commands.Context):
         """List AI models"""
+        # Get user's current model
+        current_model = user_models.get(ctx.author.id, DEFAULT_MODEL)
+        
         embed = discord.Embed(
-            title="🤖 Available Models (FREE)",
-            description=f"Current: `{DEFAULT_MODEL}`",
+            title="🤖 Available AI Models (FREE)",
+            description=f"**Your Current Model:** `{current_model}`\n\nUse `/setmodel <name>` to switch",
             color=discord.Color.blue()
         )
 
-        embed.add_field(name="llama", value="Fast & reliable", inline=False)
-        embed.add_field(name="deepseek", value="Advanced reasoning", inline=False)
-        embed.add_field(name="gemini", value="Google's latest", inline=False)
-        embed.add_field(name="mistral", value="Good for coding", inline=False)
+        embed.add_field(
+            name="llama", 
+            value="Meta LLaMA 3.2 - Fast & reliable" + (" ✅ *Active*" if current_model == "llama" else ""), 
+            inline=False
+        )
+        embed.add_field(
+            name="deepseek", 
+            value="DeepSeek R1 - Advanced reasoning" + (" ✅ *Active*" if current_model == "deepseek" else ""), 
+            inline=False
+        )
+        embed.add_field(
+            name="gemini", 
+            value="Google Gemini 2.0 - Google's latest" + (" ✅ *Active*" if current_model == "gemini" else ""), 
+            inline=False
+        )
+        embed.add_field(
+            name="mistral", 
+            value="Mistral 7B - Good for coding" + (" ✅ *Active*" if current_model == "mistral" else ""), 
+            inline=False
+        )
 
+        await ctx.send(embed=embed)
+
+    @bot.hybrid_command(name="setmodel", description="Switch AI model")
+    @app_commands.describe(model="Model to use (llama/deepseek/gemini/mistral)")
+    @app_commands.choices(model=[
+        app_commands.Choice(name="LLaMA 3.2 (Fast & Reliable)", value="llama"),
+        app_commands.Choice(name="DeepSeek R1 (Advanced Reasoning)", value="deepseek"),
+        app_commands.Choice(name="Gemini 2.0 (Google's Latest)", value="gemini"),
+        app_commands.Choice(name="Mistral 7B (Good for Coding)", value="mistral")
+    ])
+    async def setmodel(ctx: commands.Context, model: str):
+        """Switch AI model"""
+        if model not in FREE_MODELS:
+            await ctx.send(f"❌ Invalid model. Choose from: {', '.join(FREE_MODELS.keys())}", ephemeral=True)
+            return
+        
+        # Save user's preference
+        user_models[ctx.author.id] = model
+        
+        # Get model details
+        model_names = {
+            "llama": "Meta LLaMA 3.2",
+            "deepseek": "DeepSeek R1",
+            "gemini": "Google Gemini 2.0",
+            "mistral": "Mistral 7B"
+        }
+        
+        embed = discord.Embed(
+            title="✅ AI Model Changed",
+            description=f"Now using: **{model_names[model]}**",
+            color=discord.Color.green()
+        )
+        embed.add_field(name="Model ID", value=f"`{model}`", inline=False)
+        embed.set_footer(text="Your conversations will continue with this model")
+        
+        await ctx.send(embed=embed)
+
+    @bot.hybrid_command(name="currentmodel", description="Check your current AI model")
+    async def currentmodel(ctx: commands.Context):
+        """Check current model"""
+        current_model = user_models.get(ctx.author.id, DEFAULT_MODEL)
+        
+        model_names = {
+            "llama": "Meta LLaMA 3.2",
+            "deepseek": "DeepSeek R1",
+            "gemini": "Google Gemini 2.0",
+            "mistral": "Mistral 7B"
+        }
+        
+        embed = discord.Embed(
+            title="🤖 Your Current AI Model",
+            description=f"**{model_names[current_model]}**",
+            color=discord.Color.blue()
+        )
+        embed.add_field(name="Model ID", value=f"`{current_model}`", inline=False)
+        embed.add_field(name="Switch Models", value="Use `/setmodel` to change", inline=False)
+        
         await ctx.send(embed=embed)
 
     @bot.hybrid_command(name="reset", description="Reset your conversation history")
