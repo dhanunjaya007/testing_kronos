@@ -372,13 +372,12 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## 📮 Contact & Support
 
 - **GitHub Issues**: [Report bugs or request features](https://github.com/dhanunjaya007/Kronos_V1/issues)
-- **Developer**: [@dhanunjaya007](https://github.com/dhanunjaya007)
 - **Project Link**: [https://github.com/dhanunjaya007/Kronos_V1](https://github.com/dhanunjaya007/Kronos_V1)
 
 ---
 
 **⭐ Star this repo if you find it useful! ⭐**
 
-Made with ❤️ by [Dhanunjaya](https://github.com/dhanunjaya007)
+Made with ❤️ by [Dhanunjay][Skanda][Anjali][chiru]
 
 </div>
